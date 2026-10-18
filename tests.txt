@@ -1,0 +1,2 @@
+Desktop file receiver
+Transfer from Android to PC through Wi-Fi
