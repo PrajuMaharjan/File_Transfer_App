@@ -1,2 +1,2 @@
 Desktop file receiver
-Transfer from Android to PC through Wi-Fi
+Transfer from Android to PC through Wi-Fi using the PC IP

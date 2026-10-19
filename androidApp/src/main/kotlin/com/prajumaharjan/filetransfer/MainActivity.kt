@@ -10,6 +10,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -34,13 +36,26 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+data class UploadProgress(     val name: String,
+                               val sent:Long,
+                               val total:Long,
+                               val finished:Boolean=false,
+                               val failed:Boolean=false
+)
+
+private fun formatBytes(b:Long): String=when{
+    b < 1024 -> "$b B"
+    b < 1024 * 1024 -> "%.1f KB".format(b/1024.0)
+    b < 1024L * 1024*1024 -> "%.1f MB".format(b/(1024.0*1024))
+    else -> "%.2f GB".format(b/(1024.0*1024*1024))
+}
 @Composable
 fun SenderScreen() {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
     var ip by remember { mutableStateOf("") }
-    var status by remember { mutableStateOf("Enter the PC's IP, then pick a file") }
-    var progress by remember { mutableFloatStateOf(0f) }
+    val logs = remember { mutableStateListOf<String>() }
+    var transfer by remember { mutableStateOf<UploadProgress?>(null) }
     var sending by remember { mutableStateOf(false) }
 
     val picker=rememberLauncherForActivityResult(
@@ -49,15 +64,14 @@ fun SenderScreen() {
         if(uri != null){
             scope.launch {
                 sending = true
-                progress = 0f
-                status = "Sending..."
-                status = try {
-                    withContext(Dispatchers.IO) {
-                        uploadFile(context, uri, ip.trim(), 8080) { progress = it }
+                transfer = null
+                try {
+                    val done = withContext(Dispatchers.IO) {
+                        uploadFile(context, uri, ip.trim(), 8080) { transfer = it }
                     }
-                    "Sent successfully"
+                    logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
                 } catch (e: Exception) {
-                    "Failed:${e.message}"
+                    logs.add("Failed:${e.message}")
                 }
                 sending = false
             }
@@ -87,17 +101,38 @@ fun SenderScreen() {
             Text("Pick file and send")
         }
 
-        LinearProgressIndicator(progress = {progress},modifier=Modifier.fillMaxWidth())
-        Text(status)
+        val t=transfer
+        if(t==null){
+            Text("Enter the PC's IP, then pick a file")
+        }else{
+            val fraction=if (t.total>0)(t.sent.toFloat()/t.total).coerceIn(0f,1f) else 0f
+
+            val label=when{
+                t.failed -> "Failed: ${t.name}"
+                t.finished -> "Done: ${t.name} (${formatBytes(t.sent)})"
+                t.total > 0 -> "Sending ${t.name}: ${formatBytes(t.sent)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
+                else -> "Sending ${t.name}: ${formatBytes(t.sent)}"
+            }
+
+            Text(label)
+            if (t.total > 0 || t.finished) {
+                LinearProgressIndicator(
+                    progress = { if (t.finished) 1f else fraction },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+        }
+        LazyColumn { items(logs){Text(it)} } }
     }
-}
 
 private fun uploadFile(context: Context,
                        uri:Uri,
                        ip: String,
                        port:Int,
-                       onProgress:(Float)->Unit
-){
+                       onProgress:(UploadProgress)->Unit
+): UploadProgress{
     var name="file"
     var size=-1L
     context.contentResolver.query(uri,null,null,null,null)?.use{c->
@@ -109,36 +144,46 @@ private fun uploadFile(context: Context,
         }
     }
 
+    var sent=0L
+    var lastEmit=0L
     val conn=URL("http://$ip:$port/upload/${Uri.encode(name)}")
         .openConnection() as HttpURLConnection
 
-    try{
-        conn.requestMethod="PUT"
-        conn.doOutput=true
-        conn.connectTimeout=5000
-        if(size>=0) conn.setFixedLengthStreamingMode(size)
-        else conn.setChunkedStreamingMode(64*1024)
+    try {
+        conn.requestMethod = "PUT"
+        conn.doOutput = true
+        conn.connectTimeout = 5000
+        if (size >= 0) conn.setFixedLengthStreamingMode(size)
+        else conn.setChunkedStreamingMode(64 * 1024)
 
-        val input=context.contentResolver.openInputStream(uri)
-                    ?: error("Cannot open file")
+        val input = context.contentResolver.openInputStream(uri)
+            ?: error("Cannot open file")
 
-        input.use{inp->
-            conn.outputStream.use{out->
-                val buf=ByteArray(64*1024)
-                var sent=0L
-                while(true){
-                    val n=inp.read(buf)
-                    if(n<0) break
-                    out.write(buf,0,n)
+        input.use { inp ->
+            conn.outputStream.use { out ->
+                val buf = ByteArray(64 * 1024)
+                while (true) {
+                    val n = inp.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
                     sent += n
-                    if(size>0) onProgress(sent.toFloat()/size)
+                    val now = System.nanoTime()
+                    if (now - lastEmit > 100_000_000L) {
+                        lastEmit = now
+                        onProgress(UploadProgress(name, sent, size))
+                    }
                 }
             }
         }
 
-        val code=conn.responseCode
-        if(code != 200) error("Server returned $code")
-        onProgress(1f)
+        val code = conn.responseCode
+        if (code != 200) error("Server returned $code")
+        val done = UploadProgress(name, sent, size, finished = true)
+        onProgress(done)
+        return done
+    }catch (e: Exception){
+        onProgress(UploadProgress(name,sent,size,failed=true))
+        throw e
     }finally {
         conn.disconnect()
     }
