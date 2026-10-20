@@ -22,9 +22,35 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.ui.Alignment
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
+import kotlin.coroutines.CoroutineContext
+import kotlin.coroutines.cancellation.CancellationException
+import  org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
+private fun requestOffer(ip: String,port:Int,name: String,size:Long): String{
+    val c = URL("http://$ip:$port/offer").openConnection() as HttpURLConnection
+    try{
+        c.requestMethod = "POST"
+        c.doOutput = true
+        c.connectTimeout = 5000
+        c.readTimeout = 70_000
+        c.setRequestProperty("Content-Type","application/json")
+        c.outputStream.use{
+            it.write(JSONObject().put("name",name).put("size",size).toString().toByteArray())
+        }
+        return when (c.responseCode){
+            200 -> JSONObject(c.inputStream.bufferedReader().readText()).getString("token")
+            403 -> error("Rejected by PC")
+            else -> error("Server returned ${c.responseCode}")
+        }
+    }finally {
+        c.disconnect()
+    }
+}
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -40,7 +66,8 @@ data class UploadProgress(     val name: String,
                                val sent:Long,
                                val total:Long,
                                val finished:Boolean=false,
-                               val failed:Boolean=false
+                               val failed:Boolean=false,
+                               val cancelled: Boolean = false
 )
 
 private fun formatBytes(b:Long): String=when{
@@ -57,23 +84,27 @@ fun SenderScreen() {
     val logs = remember { mutableStateListOf<String>() }
     var transfer by remember { mutableStateOf<UploadProgress?>(null) }
     var sending by remember { mutableStateOf(false) }
+    var job by remember { mutableStateOf<Job?>(null) }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri:Uri?->
         if(uri != null){
-            scope.launch {
+            job = scope.launch {
                 sending = true
                 transfer = null
                 try {
                     val done = withContext(Dispatchers.IO) {
-                        uploadFile(context, uri, ip.trim(), 8080) { transfer = it }
+                        uploadFile(context, uri, ip.trim(), 8080,coroutineContext) { transfer = it }
                     }
                     logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
+                } catch (e: CancellationException) {
+                    logs.add("Cancelled")
                 } catch (e: Exception) {
                     logs.add("Failed:${e.message}")
                 }
                 sending = false
+                job = null
             }
         }
     }
@@ -108,13 +139,19 @@ fun SenderScreen() {
             val fraction=if (t.total>0)(t.sent.toFloat()/t.total).coerceIn(0f,1f) else 0f
 
             val label=when{
+                t.cancelled -> "Cancelled: ${t.name}"
                 t.failed -> "Failed: ${t.name}"
                 t.finished -> "Done: ${t.name} (${formatBytes(t.sent)})"
                 t.total > 0 -> "Sending ${t.name}: ${formatBytes(t.sent)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
                 else -> "Sending ${t.name}: ${formatBytes(t.sent)}"
             }
 
-            Text(label)
+            Row(verticalAlignment = Alignment.CenterVertically){
+                Text(label, Modifier.weight(1f))
+                if(!t.finished && !t.failed && !t.cancelled){
+                    IconButton(onClick = {job?.cancel() }) { Text("✕") }
+                }
+            }
             if (t.total > 0 || t.finished) {
                 LinearProgressIndicator(
                     progress = { if (t.finished) 1f else fraction },
@@ -124,13 +161,15 @@ fun SenderScreen() {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             }
         }
-        LazyColumn { items(logs){Text(it)} } }
+        LazyColumn { items(logs) {Text(it) } }
     }
+}
 
 private fun uploadFile(context: Context,
                        uri:Uri,
                        ip: String,
                        port:Int,
+                       ctx: CoroutineContext,
                        onProgress:(UploadProgress)->Unit
 ): UploadProgress{
     var name="file"
@@ -144,6 +183,7 @@ private fun uploadFile(context: Context,
         }
     }
 
+    val token = requestOffer(ip, port, name, size)
     var sent=0L
     var lastEmit=0L
     val conn=URL("http://$ip:$port/upload/${Uri.encode(name)}")
@@ -151,6 +191,7 @@ private fun uploadFile(context: Context,
 
     try {
         conn.requestMethod = "PUT"
+        conn.setRequestProperty("X-Token", token)
         conn.doOutput = true
         conn.connectTimeout = 5000
         if (size >= 0) conn.setFixedLengthStreamingMode(size)
@@ -163,6 +204,7 @@ private fun uploadFile(context: Context,
             conn.outputStream.use { out ->
                 val buf = ByteArray(64 * 1024)
                 while (true) {
+                    ctx.ensureActive()
                     val n = inp.read(buf)
                     if (n < 0) break
                     out.write(buf, 0, n)
@@ -177,10 +219,14 @@ private fun uploadFile(context: Context,
         }
 
         val code = conn.responseCode
+        if (code == 499) error("Cancelled by PC")
         if (code != 200) error("Server returned $code")
         val done = UploadProgress(name, sent, size, finished = true)
         onProgress(done)
         return done
+    }catch (e: CancellationException){
+        onProgress(UploadProgress(name, sent, size, cancelled = true))
+        throw e
     }catch (e: Exception){
         onProgress(UploadProgress(name,sent,size,failed=true))
         throw e

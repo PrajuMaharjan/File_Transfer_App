@@ -1,2 +1,4 @@
 Desktop file receiver
 Transfer from Android to PC through Wi-Fi using the PC IP
+Accept/Reject from the PC
+Cancel transfer mid transfer

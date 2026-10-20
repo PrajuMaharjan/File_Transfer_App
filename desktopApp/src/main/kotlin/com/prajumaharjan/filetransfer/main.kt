@@ -1,6 +1,5 @@
 package com.prajumaharjan.filetransfer
 
-
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -9,6 +8,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.*
+import kotlinx.coroutines.CompletableDeferred
+import  androidx.compose.ui.Alignment
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
 
 private fun formatBytes(b:Long): String=when{
@@ -20,15 +22,27 @@ private fun formatBytes(b:Long): String=when{
 
 fun main() = application {
 
-    val logs=remember { mutableStateListOf<String>() }
-    var transfer by remember {mutableStateOf<TransferProgress?>(null)}
+    val logs = remember { mutableStateListOf<String>() }
+    var transfer by remember { mutableStateOf<TransferProgress?>(null) }
+    val cancelFlag = remember { AtomicBoolean(false) }
+    var pending by remember { mutableStateOf<Pair<OfferRequest, CompletableDeferred<Boolean>>?>(null) }
 
     LaunchedEffect(Unit) {
-        val dir=File(System.getProperty("user.home"),"Downloads/FileTransfer")
+        val dir = File(System.getProperty("user.home"), "Downloads/FileTransfer")
         startReceiver(
             port = 8080,
             saveDir = dir,
+            cancelFlag = cancelFlag,
             onProgress = { transfer = it },
+            onOffer = { offer ->
+                val decision = CompletableDeferred<Boolean>()
+                pending = offer to decision
+                try {
+                    decision.await()
+                } finally {
+                    pending = null
+                }
+            },
             onLog = { logs.add(it) }
         )
 
@@ -39,33 +53,48 @@ fun main() = application {
         onCloseRequest = ::exitApplication,
         title = "FileTransfer"
     ) {
-        MaterialTheme{
-            Column(Modifier.padding(16.dp)){
-                Text("Receiver running",style= MaterialTheme.typography.headlineSmall)
+        MaterialTheme {
+            pending?.let { (offer, decision) ->
+                AlertDialog(
+                    onDismissRequest = { decision.complete(false) },
+                    title = { Text("Incoming file") },
+                    text = { Text("Accept ${offer.name} (${formatBytes(offer.size)})?") },
+                    confirmButton = { Button(onClick = { decision.complete(true) }) { Text("Accept") } },
+                    dismissButton = { TextButton(onClick = { decision.complete(false) }) { Text("Reject") } }
+                )
+            }
+            Column(Modifier.padding(16.dp)) {
+                Text("Receiver running", style = MaterialTheme.typography.headlineSmall)
                 Spacer(Modifier.height(12.dp))
 
-                transfer?.let{t->
+                transfer?.let { t ->
                     val fraction = if (t.total > 0) (t.received.toFloat() / t.total).coerceIn(0f, 1f) else 0f
                     val label = when {
+                        t.cancelled -> "Cancelled: ${t.name}"
                         t.failed -> "Failed: ${t.name}"
                         t.finished -> "Done: ${t.name} (${formatBytes(t.received)})"
                         t.total > 0 -> "Receiving ${t.name}: ${formatBytes(t.received)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
                         else -> "Receiving ${t.name}: ${formatBytes(t.received)}"
                     }
 
-                    Text(label)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(label, Modifier.weight(1f))
+                        if (!t.finished && !t.failed && !t.cancelled) {
+                            IconButton(onClick = { cancelFlag.set(true) }) { Text("✕") }
+                        }
+                    }
                     Spacer(Modifier.height(4.dp))
                     if (t.total > 0 || t.finished) {
                         LinearProgressIndicator(
                             progress = { if (t.finished) 1f else fraction },
                             modifier = Modifier.fillMaxWidth()
                         )
-                    } else {
+                    } else if (!t.failed && !t.cancelled) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     }
                     Spacer(Modifier.height(12.dp))
                 }
-                LazyColumn{items(logs){Text(it)}}
+                LazyColumn { items(logs) { Text(it) } }
             }
         }
     }
