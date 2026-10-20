@@ -67,7 +67,8 @@ data class UploadProgress(     val name: String,
                                val total:Long,
                                val finished:Boolean=false,
                                val failed:Boolean=false,
-                               val cancelled: Boolean = false
+                               val cancelled: Boolean = false,
+                               val waiting: Boolean = false
 )
 
 private fun formatBytes(b:Long): String=when{
@@ -139,6 +140,7 @@ fun SenderScreen() {
             val fraction=if (t.total>0)(t.sent.toFloat()/t.total).coerceIn(0f,1f) else 0f
 
             val label=when{
+                t.waiting -> "Waiting for approval on PC: ${t.name}"
                 t.cancelled -> "Cancelled: ${t.name}"
                 t.failed -> "Failed: ${t.name}"
                 t.finished -> "Done: ${t.name} (${formatBytes(t.sent)})"
@@ -148,11 +150,14 @@ fun SenderScreen() {
 
             Row(verticalAlignment = Alignment.CenterVertically){
                 Text(label, Modifier.weight(1f))
-                if(!t.finished && !t.failed && !t.cancelled){
+                if(!t.finished && !t.failed && !t.cancelled && !t.waiting){
                     IconButton(onClick = {job?.cancel() }) { Text("✕") }
                 }
             }
-            if (t.total > 0 || t.finished) {
+            if (t.waiting) {
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            }
+            else if (t.total > 0 || t.finished) {
                 LinearProgressIndicator(
                     progress = { if (t.finished) 1f else fraction },
                     modifier = Modifier.fillMaxWidth()
@@ -183,7 +188,13 @@ private fun uploadFile(context: Context,
         }
     }
 
-    val token = requestOffer(ip, port, name, size)
+    onProgress(UploadProgress(name,0,size, waiting = true))
+    val token = try{
+        requestOffer(ip, port, name, size)
+    }catch(e: Exception){
+        onProgress(UploadProgress(name,0,size, failed = true))
+        throw e
+    }
     var sent=0L
     var lastEmit=0L
     val conn=URL("http://$ip:$port/upload/${Uri.encode(name)}")
