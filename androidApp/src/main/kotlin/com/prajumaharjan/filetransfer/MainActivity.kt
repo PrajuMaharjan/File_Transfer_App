@@ -60,7 +60,10 @@ class MainActivity : ComponentActivity() {
             MaterialTheme{ SenderScreen() }
         }
     }
+
+
 }
+
 
 data class UploadProgress(     val name: String,
                                val sent:Long,
@@ -82,10 +85,23 @@ fun SenderScreen() {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
     var ip by remember { mutableStateOf("") }
+    var port by remember { mutableIntStateOf(8080) }
+    val devices = remember { mutableStateListOf<Device>() }
     val logs = remember { mutableStateListOf<String>() }
+    var discoveryStatus by remember { mutableStateOf("Starting discovery") }
     var transfer by remember { mutableStateOf<UploadProgress?>(null) }
     var sending by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
+
+    DisposableEffect(Unit) {
+        val discovery = NsDiscovery(context)
+        discovery.start(
+            onFound = {d -> devices.removeAll { it.name == d.name }; devices.add(d) },
+            onLost = {n -> devices.removeAll { it.name == n } },
+            onStatus = { discoveryStatus = it }
+        )
+        onDispose { discovery.stop() }
+    }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -96,13 +112,13 @@ fun SenderScreen() {
                 transfer = null
                 try {
                     val done = withContext(Dispatchers.IO) {
-                        uploadFile(context, uri, ip.trim(), 8080,coroutineContext) { transfer = it }
+                        uploadFile(context, uri, ip.trim(), port,coroutineContext) { transfer = it }
                     }
                     logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
                 } catch (e: CancellationException) {
                     logs.add("Cancelled")
                 } catch (e: Exception) {
-                    logs.add("Failed:${e.message}")
+                    logs.add("Failed: ${e.message}")
                 }
                 sending = false
                 job = null
@@ -118,9 +134,19 @@ fun SenderScreen() {
     ){
         Text("Send to PC",style= MaterialTheme.typography.headlineSmall)
 
+        Text("Nearby devices",style= MaterialTheme.typography.titleSmall)
+        if(devices.isEmpty()) Text("Searching...")
+        Text(discoveryStatus, style = MaterialTheme.typography.bodySmall)
+        devices.forEach { d ->
+            OutlinedButton(
+                onClick = {ip = d.host; port = d.port },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("${d.name} (${d.host})") }
+        }
+
         OutlinedTextField(
             value = ip,
-            onValueChange = { ip = it },
+            onValueChange = { ip = it; port = 8080 },
             label={Text("PC IP address (e.g. 192.168.1.23)")},
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
