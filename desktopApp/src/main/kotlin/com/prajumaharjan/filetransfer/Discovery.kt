@@ -12,17 +12,21 @@ data class Device(val name: String,val host: String,val port: Int)
 
 private const val TYPE="_filetransfer._tcp.local."
 
-private fun pickLANAddress(): InetAddress?{
-    val skip=listOf("virtual","vmware","vethernet","vpn","tap","hyper-v","bluetooth")
-    val usable= NetworkInterface.getNetworkInterfaces().toList()
-                    .filter { it.isUp && !it.isLoopback && !it.isVirtual }
-                    .filterNot { n->skip.any{n.displayName.contains(it, ignoreCase = true) } }
-    val wifi=usable.firstOrNull{n->
-        listOf("wi-fi","wireless","wlan").any{n.displayName.contains(it, ignoreCase = true) }
+private fun pickLANAddress(onLog:(String) -> Unit): InetAddress?{
+    val skip=listOf("virtual","vmware","vethernet","vpn","tap-","hyper-v","bluetooth","wsl","loopback")
+    val found = NetworkInterface.getNetworkInterfaces().toList()
+                    .filter { it.isUp && !it.isLoopback }
+                    .flatMap { n-> n.inetAddresses.toList()
+                                    .filterIsInstance<Inet4Address>()
+                                    .filter { it.isSiteLocalAddress }
+                                    .map{ n to it}
+                    }
+
+    val clean = found.filterNot { (n,_) -> skip.any{n.displayName.contains(it,ignoreCase=true) } }
+    val wifi = clean.firstOrNull{ (n,_) ->
+        listOf("wi-fi","wifi","wireless","wlan","802.11").any{n.displayName.contains(it, ignoreCase = true) }
     }
-    return (wifi ?: usable.firstOrNull())
-        ?.inetAddresses?.toList()
-        ?.firstOrNull{ it is Inet4Address && it.isSiteLocalAddress }
+    return (wifi ?: clean.firstOrNull() ?: found.firstOrNull())?.second
 }
 
 class DesktopDiscovery{
@@ -34,7 +38,7 @@ class DesktopDiscovery{
               onLost:(String)->Unit,
               onLog:(String)-> Unit
     ){
-        val addr=pickLANAddress()
+        val addr=pickLANAddress(onLog)
         onLog("mDNS bound to ${addr?.hostAddress ?: "default adapter"}")
         val j=addr?.let { JmDNS.create(it,selfName) } ?: JmDNS.create(selfName)
         jmdns=j

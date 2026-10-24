@@ -2,3 +2,5 @@ Desktop file receiver
 Transfer from Android to PC through Wi-Fi using the PC IP
 Accept/Reject from the PC
 Cancel transfer mid transfer
+
+From now on, when i have to create a new file, mention whether it is a class,file,interface,data class,enum class.annotation,Kotlin script or object
