@@ -31,7 +31,7 @@ import  org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 
-private fun requestOffer(ip: String,port:Int,name: String,size:Long): String{
+private fun requestOffer(ip: String,port:Int,name: String,size:Long,profile: Profile): String{
     val c = URL("http://$ip:$port/offer").openConnection() as HttpURLConnection
     try{
         c.requestMethod = "POST"
@@ -40,7 +40,15 @@ private fun requestOffer(ip: String,port:Int,name: String,size:Long): String{
         c.readTimeout = 70_000
         c.setRequestProperty("Content-Type","application/json")
         c.outputStream.use{
-            it.write(JSONObject().put("name",name).put("size",size).toString().toByteArray())
+            it.write(
+                JSONObject()
+                    .put("name",name)
+                    .put("size",size)
+                    .put("senderId",profile.id)
+                    .put("senderName",profile.name)
+                    .put("senderAvatar",profile.avatar.name)
+                    .toString().toByteArray()
+            )
         }
         return when (c.responseCode){
             200 -> JSONObject(c.inputStream.bufferedReader().readText()).getString("token")
@@ -57,7 +65,20 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         setContent {
-            MaterialTheme{ SenderScreen() }
+            val store =  remember { AndroidProfileStore(this@MainActivity) }
+            var profile by remember { mutableStateOf(store.load()) }
+            var editing by remember { mutableStateOf(false) }
+            val current = profile
+
+            if (current == null || editing){
+                ProfileSetupScreen(
+                    initial = current,
+                    onDone = { store.save(it); profile = it; editing = false;},
+                    onCancel = if (current != null) ({ editing = false}) else null
+                )
+            } else {
+                SenderScreen(current,onEditProfile = {editing = true})
+            }
         }
     }
 
@@ -81,7 +102,7 @@ private fun formatBytes(b:Long): String=when{
     else -> "%.2f GB".format(b/(1024.0*1024*1024))
 }
 @Composable
-fun SenderScreen() {
+fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
     var ip by remember { mutableStateOf("") }
@@ -112,7 +133,7 @@ fun SenderScreen() {
                 transfer = null
                 try {
                     val done = withContext(Dispatchers.IO) {
-                        uploadFile(context, uri, ip.trim(), port,coroutineContext) { transfer = it }
+                        uploadFile(context, uri, ip.trim(), port, profile,coroutineContext) { transfer = it }
                     }
                     logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
                 } catch (e: CancellationException) {
@@ -133,6 +154,7 @@ fun SenderScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ){
         Text("Send to PC",style= MaterialTheme.typography.headlineSmall)
+        TextButton(onClick = onEditProfile) { Text("Edit profile (${profile.name})") }
 
         Text("Nearby devices",style= MaterialTheme.typography.titleSmall)
         if(devices.isEmpty()) Text("Searching...")
@@ -141,7 +163,11 @@ fun SenderScreen() {
             OutlinedButton(
                 onClick = {ip = d.host; port = d.port },
                 modifier = Modifier.fillMaxWidth()
-            ) { Text("${d.name} (${d.host})") }
+            ) {
+                Avatar(d.displayName,d.avatar,28.dp)
+                Spacer(Modifier.width(8.dp))
+                Text("${d.displayName} (${d.host})")
+            }
         }
 
         OutlinedTextField(
@@ -199,7 +225,8 @@ fun SenderScreen() {
 private fun uploadFile(context: Context,
                        uri:Uri,
                        ip: String,
-                       port:Int,
+                       port: Int,
+                       profile: Profile,
                        ctx: CoroutineContext,
                        onProgress:(UploadProgress)->Unit
 ): UploadProgress{
@@ -216,7 +243,7 @@ private fun uploadFile(context: Context,
 
     onProgress(UploadProgress(name,0,size, waiting = true))
     val token = try{
-        requestOffer(ip, port, name, size)
+        requestOffer(ip, port, name, size, profile)
     }catch(e: Exception){
         onProgress(UploadProgress(name,0,size, failed = true))
         throw e

@@ -22,10 +22,16 @@ import  java.util.UUID
 import  java.util.concurrent.ConcurrentHashMap
 
  @Serializable
- data class HelloResponse(val name: String)
+ data class HelloResponse(val name: String, val id: String = "", val avatar: String = "GREY")
 
  @Serializable
- data class OfferRequest(val name: String,val size:Long)
+ data class OfferRequest(
+     val name: String,
+     val size: Long,
+     val senderId: String = "",
+     val senderName: String = "",
+     val senderAvatar: String = "GREY"
+ )
 
  @Serializable
  data class OfferResponse(val token: String)
@@ -42,6 +48,7 @@ import  java.util.concurrent.ConcurrentHashMap
  fun startReceiver(
      port : Int = 8080,
      saveDir : File,
+     profile: Profile,
      cancelFlag : AtomicBoolean,
      onProgress : (TransferProgress) -> Unit,
      onOffer : suspend (OfferRequest) -> Boolean,
@@ -56,7 +63,7 @@ import  java.util.concurrent.ConcurrentHashMap
          routing {
 
              get("/hello") {
-                 call.respond(HelloResponse(System.getenv("COMPUTERNAME") ?: "Desktop"))
+                 call.respond(HelloResponse(profile.name, profile.id, profile.avatar.name))
              }
 
              post("/offer") {

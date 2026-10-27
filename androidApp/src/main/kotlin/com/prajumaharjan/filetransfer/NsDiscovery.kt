@@ -7,8 +7,6 @@ import android.os.Handler
 import android.os.Looper
 import java.net.Inet4Address
 
-data class Device(val name: String,val host: String,val port: Int)
-
 class NsDiscovery(context: Context){
     private val nsd = context.getSystemService(Context.NSD_SERVICE) as NsdManager
     private val main = Handler(Looper.getMainLooper())
@@ -54,7 +52,19 @@ class NsDiscovery(context: Context){
             override fun onServiceResolved(i: NsdServiceInfo) {
                 val host = i.host
                 if(host is Inet4Address){
-                    val d = Device(i.serviceName,host.hostAddress ?: "",i.port)
+                    fun attr(k: String): String? = i.attributes[k]?.let {String(it,Charsets.UTF_8) }
+                    val d = Device(
+                        name = i.serviceName,
+                        host = host.hostAddress ?: "",
+                        port = i.port,
+                        id = attr("id") ?: "",
+                        displayName = attr("dn") ?: i.serviceName,
+                        avatar = try{
+                            AvatarColor.valueOf(attr("av") ?: "")
+                        }catch (e: Exception){
+                            AvatarColor.GREY
+                        }
+                    )
                     main.post { onFound(d) }
                 }
                 finish(onFound)

@@ -8,8 +8,6 @@ import javax.jmdns.ServiceEvent
 import javax.jmdns.ServiceInfo
 import javax.jmdns.ServiceListener
 
-data class Device(val name: String,val host: String,val port: Int)
-
 private const val TYPE="_filetransfer._tcp.local."
 
 private fun pickLANAddress(onLog:(String) -> Unit): InetAddress?{
@@ -33,6 +31,7 @@ class DesktopDiscovery{
     private var jmdns: JmDNS?=null
 
     fun start(selfName: String,
+              profile: Profile,
               port:Int,
               onFound:(Device)->Unit,
               onLost:(String)->Unit,
@@ -42,7 +41,16 @@ class DesktopDiscovery{
         onLog("mDNS bound to ${addr?.hostAddress ?: "default adapter"}")
         val j=addr?.let { JmDNS.create(it,selfName) } ?: JmDNS.create(selfName)
         jmdns=j
-        j.registerService(ServiceInfo.create(TYPE, selfName, port, "FileTransfer"))
+        j.registerService(
+            ServiceInfo.create(
+                TYPE, selfName, port, 0, 0,
+                mapOf(
+                    "id" to profile.id,
+                    "dn" to profile.name,
+                    "av" to profile.avatar.name
+                )
+            )
+        )
         j.addServiceListener(TYPE,object : ServiceListener {
             override fun serviceAdded(e: ServiceEvent) {
                 j.requestServiceInfo(e.type,e.name,true)
@@ -51,7 +59,20 @@ class DesktopDiscovery{
             override fun serviceResolved(e: ServiceEvent){
                 if(e.name==selfName) return
                 val ip=e.info.inet4Addresses.firstOrNull()?.hostAddress ?: return
-                onFound(Device(e.name,ip,e.info.port))
+                onFound(
+                    Device(
+                        name = e.name,
+                        host = ip,
+                        port = e.info.port,
+                        id = e.info.getPropertyString("id") ?: "",
+                        displayName = e.info.getPropertyString("dn") ?: e.name,
+                        avatar = try {
+                            AvatarColor.valueOf(e.info.getPropertyString("av") ?: "")
+                        }catch (ex: Exception){
+                            AvatarColor.GREY
+                        }
+                    )
+                )
             }
         })
     }
