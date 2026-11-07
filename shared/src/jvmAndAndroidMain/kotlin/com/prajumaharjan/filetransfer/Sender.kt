@@ -65,6 +65,21 @@ private fun receiverCancelled(host: String,port: Int, encodedName: String): Bool
     }
 }
 
+private fun notifyCancel(host: String,port: Int, encodedName: String){
+    try{
+        val c = URL("http://$host:$port/cancel/$encodedName").openConnection() as HttpURLConnection
+        try{
+            c.connectTimeout = 1000
+            c.requestMethod = "POST"
+            c.readTimeout = 1000
+            c.responseCode
+        } finally {
+            c.disconnect()
+        }
+    } catch (e: Exception){
+    }
+}
+
 fun sendFile(
     file: File,
     host: String,
@@ -139,6 +154,7 @@ fun sendStream(
         onProgress(done)
         return done
     } catch (e: CancellationException) {
+        notifyCancel(host,port,encoded)
         onProgress(SendProgress(name, sent, size, cancelled = true))
         throw e
     } catch (e: CancelledbyReceiver) {

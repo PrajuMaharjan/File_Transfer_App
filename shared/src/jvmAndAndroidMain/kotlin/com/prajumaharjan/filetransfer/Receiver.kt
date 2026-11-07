@@ -1,25 +1,26 @@
  package com.prajumaharjan.filetransfer
 
-import  io.ktor.http.*
-import  io.ktor.serialization.kotlinx.json.*
-import  io.ktor.server.application.*
-import  io.ktor.server.cio.*
-import  io.ktor.server.engine.*
-import  io.ktor.server.plugins.contentnegotiation.*
-import  io.ktor.server.request.*
-import  io.ktor.server.response.*
-import  io.ktor.server.routing.*
-import  io.ktor.utils.io.*
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.*
+import io.ktor.server.cio.*
+import io.ktor.server.engine.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import io.ktor.utils.io.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
-import  kotlinx.serialization.Serializable
-import  java.io.File
-import  java.io.FileOutputStream
-import  java.io.IOException
-import  java.util.concurrent.atomic.AtomicBoolean
-import  java.util.UUID
-import  java.util.concurrent.ConcurrentHashMap
+import kotlinx.serialization.Serializable
+import kotlinx.coroutines.delay
+import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
  @Serializable
  data class HelloResponse(val name: String, val id: String = "", val avatar: String = "GREY")
@@ -58,6 +59,7 @@ import  java.util.concurrent.ConcurrentHashMap
 
      val tokens = ConcurrentHashMap<String, String>()
      val cancelledNames = ConcurrentHashMap.newKeySet<String>()
+     val senderCancelled = ConcurrentHashMap.newKeySet<String>()
 
      return embeddedServer(CIO, port = port, host = "0.0.0.0") {
          install(ContentNegotiation) { json() }
@@ -70,6 +72,11 @@ import  java.util.concurrent.ConcurrentHashMap
              get("/cancelled/{name}") {
                  val n = File(call.parameters["name"] ?: "").name
                  call.respondText(if (cancelledNames.contains(n)) "true" else "false")
+             }
+
+             post("/cancel/{name}") {
+                 senderCancelled.add(File(call.parameters["name"] ?: "").name)
+                 call.respond(HttpStatusCode.OK)
              }
 
              post("/offer") {
@@ -134,13 +141,21 @@ import  java.util.concurrent.ConcurrentHashMap
                  } catch (e: TransferCancelled) {
                      target.delete()
                      cancelledNames.add(safeName)
+                     senderCancelled.remove(safeName)
                      onProgress(TransferProgress(safeName, received, total, cancelled = true))
                      onLog("Cancelled $safeName")
                      call.respond(HttpStatusCode(499,"Cancelled"))
                  } catch (e: Exception) {
+                     delay(500)
+                     val bySender = senderCancelled.remove(safeName)
                      target.delete()
-                     onProgress(TransferProgress(safeName, received, total, failed = true))
-                     onLog("Failed $safeName: ${e.message}")
+                     if(bySender){
+                         onProgress(TransferProgress(safeName, received, total, cancelled = true))
+                         onLog("Cancelled by sender: $safeName")
+                     }else{
+                         onProgress(TransferProgress(safeName, received, total, failed = true))
+                         onLog("Failed $safeName: ${e.message}")
+                     }
                      call.respond(HttpStatusCode.InternalServerError)
                  }
              }

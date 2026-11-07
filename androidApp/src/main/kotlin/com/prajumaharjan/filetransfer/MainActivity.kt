@@ -96,6 +96,8 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
                     logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
                 } catch (e: CancellationException) {
                     logs.add("Cancelled")
+                } catch (e: CancelledbyReceiver) {
+                    logs.add("Cancelled by receiver")
                 } catch (e: Exception) {
                     logs.add("Failed: ${e.message}")
                 }
