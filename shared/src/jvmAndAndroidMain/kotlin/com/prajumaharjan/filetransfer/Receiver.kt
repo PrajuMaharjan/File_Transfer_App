@@ -114,6 +114,7 @@ import java.util.concurrent.ConcurrentHashMap
 
                  var received = 0L
                  var lastEmit = 0L
+                 var stalledMs = 0
 
                  try {
                      withContext(Dispatchers.IO) {
@@ -121,7 +122,16 @@ import java.util.concurrent.ConcurrentHashMap
                              val buf = ByteArray(64 * 1024)
                              while (true) {
                                  if (cancelFlag.get()) throw TransferCancelled()
-                                 val n = channel.readAvailable(buf, 0, buf.size)
+                                 val n = withTimeoutOrNull(1000){
+                                     channel.readAvailable(buf, 0, buf.size)
+                                 }
+                                 if(n==null){
+                                     stalledMs += 1000
+                                     if(stalledMs >= 10_000) throw IOException("Connection stalled")
+                                     continue
+                                 }
+                                 stalledMs = 0
+
                                  if (n < 0) break
                                  out.write(buf, 0, n)
                                  received += n
@@ -156,7 +166,7 @@ import java.util.concurrent.ConcurrentHashMap
                          onProgress(TransferProgress(safeName, received, total, failed = true))
                          onLog("Failed $safeName: ${e.message}")
                      }
-                     call.respond(HttpStatusCode.InternalServerError)
+                     runCatching { call.respond(HttpStatusCode.InternalServerError) }
                  }
              }
          }
