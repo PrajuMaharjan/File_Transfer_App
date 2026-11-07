@@ -12,6 +12,13 @@ import kotlinx.coroutines.CompletableDeferred
 import androidx.compose.ui.Alignment
 import java.util.concurrent.atomic.AtomicBoolean
 import java.io.File
+import java.awt.FileDialog
+import java.awt.Frame
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private fun formatBytes(b:Long): String=when{
     b < 1024 -> "$b B"
@@ -33,6 +40,35 @@ fun main() {
         val cancelFlag = remember { AtomicBoolean(false) }
         val devices = remember { mutableStateListOf<Device>() }
         var pending by remember { mutableStateOf<Pair<OfferRequest, CompletableDeferred<Boolean>>?>(null) }
+        val scope = rememberCoroutineScope()
+        var outgoing by remember { mutableStateOf<SendProgress?>(null) }
+        var sendJob by remember { mutableStateOf<Job?>(null) }
+        val sendTo: (Device) -> Unit = { d ->
+            val p = profile
+            if (p != null && sendJob == null) {
+                val dialog = FileDialog(null as Frame?, "Choose a file to send", FileDialog.LOAD)
+                dialog.isVisible = true
+                val dir = dialog.directory
+                val fn = dialog.file
+                if (dir != null && fn != null) {
+                    val file = File(dir, fn)
+                    sendJob = scope.launch {
+                        outgoing = null
+                        try {
+                            val done = withContext(Dispatchers.IO) {
+                                sendFile(file, d.host, d.port, p, coroutineContext) { outgoing = it }
+                            }
+                            logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
+                        } catch (e: CancellationException) {
+                            logs.add("Cancelled")
+                        } catch (e: Exception) {
+                            logs.add("Failed: ${e.message}")
+                        }
+                        sendJob = null
+                    }
+                }
+            }
+        }
 
         LaunchedEffect(profile?.id) {
             val p = profile ?: return@LaunchedEffect
@@ -137,6 +173,35 @@ fun main() {
                             }
                             Spacer(Modifier.height(12.dp))
                         }
+                        outgoing?.let { t ->
+                            val fraction = if (t.total > 0) (t.sent.toFloat() / t.total).coerceIn(0f, 1f) else 0f
+                            val label = when {
+                                t.waiting -> "Waiting for approval: ${t.name}"
+                                t.cancelled -> "Cancelled: ${t.name}"
+                                t.failed -> "Failed: ${t.name}"
+                                t.finished -> "Sent: ${t.name} (${formatBytes(t.sent)})"
+                                else -> "Sending ${t.name}: ${formatBytes(t.sent)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
+                            }
+
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(label, Modifier.weight(1f))
+                                if (!t.finished && !t.failed && !t.cancelled && !t.waiting) {
+                                    IconButton(onClick = { sendJob?.cancel() }) { Text("✕") }
+                                }
+                            }
+
+                            Spacer(Modifier.height(4.dp))
+                            if (t.waiting) {
+                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                            } else {
+                                LinearProgressIndicator(
+                                    progress = { if (t.finished) 1f else fraction },
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+
+                            Spacer(Modifier.height(12.dp))
+                        }
                         Text("Nearby devices", style = MaterialTheme.typography.titleSmall)
                         if (devices.isEmpty()) Text("Noone found yet")
                         devices.forEach { d ->
@@ -144,6 +209,8 @@ fun main() {
                                 Avatar(d.displayName, d.avatar, 28.dp)
                                 Spacer(Modifier.width(8.dp))
                                 Text("${d.displayName} (${d.host}:${d.port})")
+                                Spacer(Modifier.width(8.dp))
+                                Button(enabled = sendJob == null, onClick = {sendTo(d)}) {Text("Send file") }
                             }
                         }
                         Spacer(Modifier.height(12.dp))

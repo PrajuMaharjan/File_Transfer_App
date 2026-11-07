@@ -1,4 +1,3 @@
-import org.jetbrains.kotlin.gradle.ExperimentalKotlinGradlePluginApi
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -33,16 +32,6 @@ kotlin {
        }
     }
 
-    @OptIn(ExperimentalKotlinGradlePluginApi::class)
-    applyDefaultHierarchyTemplate{
-        common{
-            group("jvmAndAndroid"){
-                withJvm()
-                withAndroidTarget()
-            }
-        }
-    }
-
     sourceSets {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
@@ -62,12 +51,21 @@ kotlin {
         commonTest.dependencies {
             implementation(libs.kotlin.test)
         }
-        getByName("jvmAndAndroidMain").dependencies {
+        jvmMain.dependencies {
             api(libs.ktor.server.core)
             implementation(libs.ktor.server.cio)
             implementation(libs.ktor.server.contentNegotiation)
             implementation(libs.ktor.serialization.kotlinxJson)
         }
+        androidMain.dependencies {
+            api(libs.ktor.server.core)
+            implementation(libs.ktor.server.cio)
+            implementation(libs.ktor.server.contentNegotiation)
+            implementation(libs.ktor.serialization.kotlinxJson)
+        }
+        val sharedJvmDir = "src/jvmAndAndroidMain/kotlin"
+        jvmMain.get().kotlin.srcDir(sharedJvmDir)
+        androidMain.get().kotlin.srcDir(sharedJvmDir)
     }
 }
 

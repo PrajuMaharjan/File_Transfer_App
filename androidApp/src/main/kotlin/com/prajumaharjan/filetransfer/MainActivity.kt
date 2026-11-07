@@ -24,41 +24,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.ensureActive
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
-import  org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
-private fun requestOffer(ip: String,port:Int,name: String,size:Long,profile: Profile): String{
-    val c = URL("http://$ip:$port/offer").openConnection() as HttpURLConnection
-    try{
-        c.requestMethod = "POST"
-        c.doOutput = true
-        c.connectTimeout = 5000
-        c.readTimeout = 70_000
-        c.setRequestProperty("Content-Type","application/json")
-        c.outputStream.use{
-            it.write(
-                JSONObject()
-                    .put("name",name)
-                    .put("size",size)
-                    .put("senderId",profile.id)
-                    .put("senderName",profile.name)
-                    .put("senderAvatar",profile.avatar.name)
-                    .toString().toByteArray()
-            )
-        }
-        return when (c.responseCode){
-            200 -> JSONObject(c.inputStream.bufferedReader().readText()).getString("token")
-            403 -> error("Rejected by PC")
-            else -> error("Server returned ${c.responseCode}")
-        }
-    }finally {
-        c.disconnect()
-    }
-}
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -85,16 +53,6 @@ class MainActivity : ComponentActivity() {
 
 }
 
-
-data class UploadProgress(     val name: String,
-                               val sent:Long,
-                               val total:Long,
-                               val finished:Boolean=false,
-                               val failed:Boolean=false,
-                               val cancelled: Boolean = false,
-                               val waiting: Boolean = false
-)
-
 private fun formatBytes(b:Long): String=when{
     b < 1024 -> "$b B"
     b < 1024 * 1024 -> "%.1f KB".format(b/1024.0)
@@ -110,7 +68,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     val devices = remember { mutableStateListOf<Device>() }
     val logs = remember { mutableStateListOf<String>() }
     var discoveryStatus by remember { mutableStateOf("Starting discovery") }
-    var transfer by remember { mutableStateOf<UploadProgress?>(null) }
+    var transfer by remember { mutableStateOf<SendProgress?>(null) }
     var sending by remember { mutableStateOf(false) }
     var job by remember { mutableStateOf<Job?>(null) }
 
@@ -228,8 +186,8 @@ private fun uploadFile(context: Context,
                        port: Int,
                        profile: Profile,
                        ctx: CoroutineContext,
-                       onProgress:(UploadProgress)->Unit
-): UploadProgress{
+                       onProgress:(SendProgress)->Unit
+): SendProgress{
     var name="file"
     var size=-1L
     context.contentResolver.query(uri,null,null,null,null)?.use{c->
@@ -241,60 +199,8 @@ private fun uploadFile(context: Context,
         }
     }
 
-    onProgress(UploadProgress(name,0,size, waiting = true))
-    val token = try{
-        requestOffer(ip, port, name, size, profile)
-    }catch(e: Exception){
-        onProgress(UploadProgress(name,0,size, failed = true))
-        throw e
-    }
-    var sent=0L
-    var lastEmit=0L
-    val conn=URL("http://$ip:$port/upload/${Uri.encode(name)}")
-        .openConnection() as HttpURLConnection
-
-    try {
-        conn.requestMethod = "PUT"
-        conn.setRequestProperty("X-Token", token)
-        conn.doOutput = true
-        conn.connectTimeout = 5000
-        if (size >= 0) conn.setFixedLengthStreamingMode(size)
-        else conn.setChunkedStreamingMode(64 * 1024)
-
-        val input = context.contentResolver.openInputStream(uri)
-            ?: error("Cannot open file")
-
-        input.use { inp ->
-            conn.outputStream.use { out ->
-                val buf = ByteArray(64 * 1024)
-                while (true) {
-                    ctx.ensureActive()
-                    val n = inp.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                    sent += n
-                    val now = System.nanoTime()
-                    if (now - lastEmit > 100_000_000L) {
-                        lastEmit = now
-                        onProgress(UploadProgress(name, sent, size))
-                    }
-                }
-            }
-        }
-
-        val code = conn.responseCode
-        if (code == 499) error("Cancelled by PC")
-        if (code != 200) error("Server returned $code")
-        val done = UploadProgress(name, sent, size, finished = true)
-        onProgress(done)
-        return done
-    }catch (e: CancellationException){
-        onProgress(UploadProgress(name, sent, size, cancelled = true))
-        throw e
-    }catch (e: Exception){
-        onProgress(UploadProgress(name,sent,size,failed=true))
-        throw e
-    }finally {
-        conn.disconnect()
-    }
+    return sendStream(
+        name, size, { context.contentResolver.openInputStream(uri) },
+        ip, port, profile, ctx, onProgress
+    )
 }
