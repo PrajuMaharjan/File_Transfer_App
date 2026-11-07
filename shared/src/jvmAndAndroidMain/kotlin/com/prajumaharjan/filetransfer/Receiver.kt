@@ -57,6 +57,7 @@ import  java.util.concurrent.ConcurrentHashMap
      saveDir.mkdirs()
 
      val tokens = ConcurrentHashMap<String, String>()
+     val cancelledNames = ConcurrentHashMap.newKeySet<String>()
 
      return embeddedServer(CIO, port = port, host = "0.0.0.0") {
          install(ContentNegotiation) { json() }
@@ -64,6 +65,11 @@ import  java.util.concurrent.ConcurrentHashMap
 
              get("/hello") {
                  call.respond(HelloResponse(profile.name, profile.id, profile.avatar.name))
+             }
+
+             get("/cancelled/{name}") {
+                 val n = File(call.parameters["name"] ?: "").name
+                 call.respondText(if (cancelledNames.contains(n)) "true" else "false")
              }
 
              post("/offer") {
@@ -95,6 +101,7 @@ import  java.util.concurrent.ConcurrentHashMap
                  }
                  val target = File(saveDir, safeName)
                  cancelFlag.set(false)
+                 cancelledNames.remove(safeName)
                  val total = call.request.contentLength() ?: -1L
                  val channel = call.receiveChannel()
 
@@ -126,6 +133,7 @@ import  java.util.concurrent.ConcurrentHashMap
                      call.respond(HttpStatusCode.OK)
                  } catch (e: TransferCancelled) {
                      target.delete()
+                     cancelledNames.add(safeName)
                      onProgress(TransferProgress(safeName, received, total, cancelled = true))
                      onLog("Cancelled $safeName")
                      call.respond(HttpStatusCode(499,"Cancelled"))

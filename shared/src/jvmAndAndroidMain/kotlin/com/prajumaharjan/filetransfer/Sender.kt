@@ -48,6 +48,23 @@ private fun requestOffer(host: String, port: Int, name: String, size: Long, prof
     }
 }
 
+class CancelledbyReceiver : Exception("Cancelled by receiver")
+
+private fun receiverCancelled(host: String,port: Int, encodedName: String): Boolean{
+    return try{
+        val c = URL("http://$host:$port/cancelled/$encodedName").openConnection() as HttpURLConnection
+        try{
+            c.connectTimeout = 1000
+            c.readTimeout = 1000
+            c.responseCode == 200 && c.getInputStream().bufferedReader().readText() == "true"
+        } finally {
+            c.disconnect()
+        }
+    } catch (e: Exception){
+        false
+    }
+}
+
 fun sendFile(
     file: File,
     host: String,
@@ -81,6 +98,7 @@ fun sendStream(
 
     var sent = 0L
     var lastEmit = 0L
+    var lastPoll = System.nanoTime()
     val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
     val conn = URL("http://$host:$port/upload/$encoded").openConnection() as HttpURLConnection
     try {
@@ -102,6 +120,10 @@ fun sendStream(
                     out.write(buf, 0, n)
                     sent += n
                     val now = System.nanoTime()
+                    if (now - lastPoll > 500_000_000L){
+                        lastPoll = now
+                        if (receiverCancelled(host,port,encoded)) throw CancelledbyReceiver()
+                    }
                     if (now - lastEmit > 100_000_000L) {
                         lastEmit = now
                         onProgress(SendProgress(name, sent, size))
@@ -111,7 +133,7 @@ fun sendStream(
         }
 
         val code = conn.responseCode
-        if (code == 499) error("Cancelled by receiver")
+        if (code == 499) throw CancelledbyReceiver()
         if (code != 200) error("Server returned $code")
         val done = SendProgress(name, sent, size, finished = true)
         onProgress(done)
@@ -119,7 +141,11 @@ fun sendStream(
     } catch (e: CancellationException) {
         onProgress(SendProgress(name, sent, size, cancelled = true))
         throw e
-    } catch (e: Exception) {
+    } catch (e: CancelledbyReceiver) {
+        onProgress(SendProgress(name, sent, size, cancelled = true))
+        throw e
+    }
+    catch (e: Exception) {
         onProgress(SendProgress(name, sent, size, failed = true))
         throw e
     } finally {
