@@ -75,7 +75,7 @@ fun main() {
             val dir = File(System.getProperty("user.home"), "Downloads/FileTransfer")
             startReceiver(
                 port = 8080,
-                saveDir = dir,
+                sink = DirFileSink(dir),
                 profile = p,
                 cancelFlag = cancelFlag,
                 onProgress = { transfer = it },
@@ -95,8 +95,7 @@ fun main() {
         }
 
         DisposableEffect(profile?.id) {
-            val p = profile
-            if (p == null) return@DisposableEffect onDispose {  }
+            val p = profile ?: return@DisposableEffect onDispose {  }
             val discovery = DesktopDiscovery()
             val selfName = (System.getenv("COMPUTERNAME") ?: "Desktop") + "-" + (1000..9999).random()
             Thread {

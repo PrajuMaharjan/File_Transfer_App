@@ -10,6 +10,8 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import io.ktor.utils.io.*
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.withContext
@@ -46,16 +48,28 @@ import java.util.concurrent.ConcurrentHashMap
  )
 
  class TransferCancelled : Exception("Cancelled")
+
+ interface FileSink {
+     fun open(name: String): java.io.OutputStream
+     fun commit(name: String) {}
+     fun discard(name: String)
+ }
+
+ class DirFileSink(private val dir: File) : FileSink {
+     init { dir.mkdirs() }
+     override fun open(name: String): java.io.OutputStream = FileOutputStream(File(dir,name))
+     override fun discard(name: String) { File(dir,name).delete() }
+ }
+
  fun startReceiver(
      port : Int = 8080,
-     saveDir : File,
+     sink : FileSink,
      profile: Profile,
      cancelFlag : AtomicBoolean,
      onProgress : (TransferProgress) -> Unit,
      onOffer : suspend (OfferRequest) -> Boolean,
      onLog : (String) -> Unit
  ) : EmbeddedServer<*,*> {
-     saveDir.mkdirs()
 
      val tokens = ConcurrentHashMap<String, String>()
      val cancelledNames = ConcurrentHashMap.newKeySet<String>()
@@ -84,7 +98,7 @@ import java.util.concurrent.ConcurrentHashMap
                  val safeName = File(offer.name).name
 
                  // Counts as rejected if not accepted within 60 seconds
-                 val accepted = withTimeoutOrNull(60_000) {
+                 val accepted = withTimeoutOrNull(60.seconds) {
                      onOffer(offer.copy(name = safeName))
                  } ?: false
 
@@ -106,7 +120,6 @@ import java.util.concurrent.ConcurrentHashMap
                      call.respond(HttpStatusCode.Unauthorized)
                      return@put
                  }
-                 val target = File(saveDir, safeName)
                  cancelFlag.set(false)
                  cancelledNames.remove(safeName)
                  val total = call.request.contentLength() ?: -1L
@@ -118,11 +131,11 @@ import java.util.concurrent.ConcurrentHashMap
 
                  try {
                      withContext(Dispatchers.IO) {
-                         FileOutputStream(target).use { out ->
+                         sink.open(safeName).use { out ->
                              val buf = ByteArray(64 * 1024)
                              while (true) {
                                  if (cancelFlag.get()) throw TransferCancelled()
-                                 val n = withTimeoutOrNull(1000){
+                                 val n = withTimeoutOrNull(1000.milliseconds){
                                      channel.readAvailable(buf, 0, buf.size)
                                  }
                                  if(n==null){
@@ -145,20 +158,21 @@ import java.util.concurrent.ConcurrentHashMap
                              if (total >= 0 && received < total) throw IOException("Connection lost")
                          }
                      }
+                     sink.commit(safeName)
                      onProgress(TransferProgress(safeName, received, total, finished = true))
                      onLog("Received $safeName ($received bytes)")
                      call.respond(HttpStatusCode.OK)
                  } catch (e: TransferCancelled) {
-                     target.delete()
+                     sink.discard(safeName)
                      cancelledNames.add(safeName)
                      senderCancelled.remove(safeName)
                      onProgress(TransferProgress(safeName, received, total, cancelled = true))
                      onLog("Cancelled $safeName")
                      call.respond(HttpStatusCode(499,"Cancelled"))
                  } catch (e: Exception) {
-                     delay(500)
+                     delay(500.milliseconds)
                      val bySender = senderCancelled.remove(safeName)
-                     target.delete()
+                     sink.discard(safeName)
                      if(bySender){
                          onProgress(TransferProgress(safeName, received, total, cancelled = true))
                          onLog("Cancelled by sender: $safeName")

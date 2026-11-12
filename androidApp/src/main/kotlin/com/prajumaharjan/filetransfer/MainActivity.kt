@@ -4,6 +4,11 @@ import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -53,6 +58,16 @@ class MainActivity : ComponentActivity() {
 
 }
 
+private fun startReceiverService(context: Context){
+    ContextCompat.startForegroundService(context, Intent(context, ReceiverService::class.java))
+}
+
+private fun stopReceiverService(context: Context){
+    context.startService(
+        Intent(context, ReceiverService::class.java).setAction(ReceiverService.ACTION_STOP)
+    )
+}
+
 private fun formatBytes(b:Long): String=when{
     b < 1024 -> "$b B"
     b < 1024 * 1024 -> "%.1f KB".format(b/1024.0)
@@ -75,7 +90,8 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     DisposableEffect(Unit) {
         val discovery = NsDiscovery(context)
         discovery.start(
-            onFound = {d -> devices.removeAll { it.name == d.name }; devices.add(d) },
+            onFound = {d -> if (d.id != profile.id) { devices.removeAll { it.name == d.name }; devices.add(d) }
+            },
             onLost = {n -> devices.removeAll { it.name == n } },
             onStatus = { discoveryStatus = it }
         )
@@ -107,14 +123,62 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         }
     }
 
+    val notifPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { startReceiverService(context) }
+
     Column(Modifier
             .fillMaxSize()
             .safeDrawingPadding()
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ){
+        ReceiverHub.pending?.let { (offer, decision) ->
+            AlertDialog(
+                onDismissRequest = { decision.complete(false) },
+                title = { Text("Incoming file") },
+                text = { Text("${offer.senderName.ifBlank { "Someone" }} wants to send ${offer.name} (${formatBytes(offer.size)}). Accept?") },
+                confirmButton = { Button(onClick = { decision.complete(true) }) { Text("Accept") } },
+                dismissButton = { TextButton(onClick = { decision.complete(false) }) { Text("Reject") } }
+            )
+        }
+
         Text("Send to PC",style= MaterialTheme.typography.headlineSmall)
         TextButton(onClick = onEditProfile) { Text("Edit profile (${profile.name})") }
+        Row(verticalAlignment = Alignment.CenterVertically){
+            Text("Receive files", Modifier.weight(1f))
+            Switch(
+                checked = ReceiverHub.running,
+                onCheckedChange = { on ->
+                    if(on){
+                        if(Build.VERSION.SDK_INT >= 33 &&
+                            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS)
+                            != PackageManager.PERMISSION_GRANTED
+                        ) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                        else startReceiverService(context)
+                    }else stopReceiverService(context)
+                }
+            )
+        }
+        ReceiverHub.transfer?.let {r ->
+            val f = if (r.total > 0) (r.received.toFloat() / r.total).coerceIn(0f,1f) else 0f
+            val text = when {
+                r.cancelled -> "Cancelled: ${r.name}"
+                r.failed -> "Failed: ${r.name}"
+                r.finished -> "Received: ${r.name} (${formatBytes(r.received)})"
+                else -> "Receiving ${r.name}: ${formatBytes(r.received)} / ${formatBytes(r.total)} (${(f * 100).toInt()}%)"
+            }
+            Row(verticalAlignment = Alignment.CenterVertically){
+                Text(text,Modifier.weight(1f))
+                if(!r.finished && !r.failed && !r.cancelled){
+                    IconButton(onClick = { ReceiverHub.cancelFlag.set(true) }) {Text("✕") }
+                }
+            }
+            LinearProgressIndicator(
+                progress = { if (r.finished) 1f else f },
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
 
         Text("Nearby devices",style= MaterialTheme.typography.titleSmall)
         if(devices.isEmpty()) Text("Searching...")
