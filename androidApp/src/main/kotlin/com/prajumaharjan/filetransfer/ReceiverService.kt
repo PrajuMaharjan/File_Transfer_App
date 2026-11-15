@@ -116,7 +116,7 @@ class ReceiverService : Service() {
             acquire()
         }
         val info = NsdServiceInfo().apply {
-            serviceName = Build.MODEL + "-" + (1000..9999).random()
+            serviceName = "FT-" + profile.id.take(8)
             serviceType = "_filetransfer._tcp"
             port = 8080
             setAttribute("id",profile.id)
@@ -130,8 +130,8 @@ class ReceiverService : Service() {
             override fun onRegistrationFailed(i: NsdServiceInfo, code: Int) {
                 ReceiverHub.logs.add("Advertising failed, code $code")
             }
-            override fun onServiceUnregistered(i: NsdServiceInfo) {}
-            override fun onUnregistrationFailed(i: NsdServiceInfo,code: Int) {}
+            override fun onServiceUnregistered(i: NsdServiceInfo) { runCatching { lock?.release() } }
+            override fun onUnregistrationFailed(i: NsdServiceInfo,code: Int) { runCatching { lock?.release() }}
         }
         regListener = l
         val m = getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -184,9 +184,10 @@ class ReceiverService : Service() {
     override fun onDestroy() {
         ReceiverHub.running = false
         ReceiverHub.pending?.second?.complete(false)
-        regListener?.let { runCatching { nsd?.unregisterService(it) } }
+        val l =regListener
+        if(l != null) runCatching { nsd?.unregisterService(l) }
         runCatching { server?.stop(300, 1000) }
-        runCatching { lock?.release() }
+        if(l == null) runCatching { lock?.release() }
         scope.cancel()
         super.onDestroy()
     }
