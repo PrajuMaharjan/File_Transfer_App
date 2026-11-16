@@ -108,22 +108,29 @@ fun main() {
                         profile = p,
                         port = 8080,
                         onFound = { d ->
-                            scope.launch(Dispatchers.IO){
-                                var h = fetchHello(d.host,d.port)
-                                if (h==null) { delay(800); h=fetchHello(d.host,d.port) }
-                                val hello = h ?: return@launch
-                                val full = d.withHello(hello)
-                                if (full.id != p.id) {
-                                    devices.removeAll {
-                                        it.name == full.name ||
-                                                (full.id.isNotBlank() && it.id == full.id) ||
-                                                (it.host == full.host && it.port == full.port)
+                            scope.launch {
+                                val h: HelloResponse? = withContext(Dispatchers.IO) {
+                                    var r = fetchHello(d.host, d.port)
+                                    if (r == null) {
+                                        delay(800)
+                                        r = fetchHello(d.host,d.port)
                                     }
-                                    devices.add(full)
+                                    r
+                                }
+                                if (h != null) {
+                                    val full = d.withHello(h)
+                                    if (full.id != p.id) {
+                                        devices.removeAll {
+                                            it.name == full.name ||
+                                                    (full.id.isNotBlank() && it.id == full.id) ||
+                                                    (it.host == full.host && it.port == full.port)
+                                        }
+                                        devices.add(full)
+                                    }
                                 }
                             }
                         },
-                        onLost = { n -> devices.removeAll { it.name == n } },
+                        onLost = { n -> scope.launch{ devices.removeAll { it.name == n } } },
                         onLog = { logs.add(it) }
                     )
                     logs.add("Advertising as $selfName")
