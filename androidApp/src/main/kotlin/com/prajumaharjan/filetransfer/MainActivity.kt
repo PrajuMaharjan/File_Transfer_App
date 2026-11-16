@@ -29,6 +29,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -90,12 +91,50 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     DisposableEffect(Unit) {
         val discovery = NsDiscovery(context)
         discovery.start(
-            onFound = {d -> if (d.id != profile.id) { devices.removeAll { it.name == d.name }; devices.add(d) }
+            onFound = { d ->
+                scope.launch{
+                    val h: HelloResponse? = withContext(Dispatchers.IO) {
+                        var r = fetchHello(d.host, d.port)
+                        if (r == null) {
+                            delay(800)
+                            r = fetchHello(d.host, d.port)
+                        }
+                        r
+                    }
+                    if (h != null) {
+                        val full = d.withHello(h)
+                        if (full.id != profile.id) {
+                            devices.removeAll {
+                                it.name == full.name ||
+                                        (full.id.isNotBlank() && it.id == full.id) ||
+                                        (it.host == full.host && it.port == full.port)
+                            }
+                            devices.add(full)
+                        }
+                    }
+                }
             },
             onLost = {n -> devices.removeAll { it.name == n } },
             onStatus = { discoveryStatus = it }
         )
         onDispose { discovery.stop() }
+    }
+
+    LaunchedEffect(Unit) {
+        val misses = mutableMapOf<String, Int>()
+        while (true) {
+            delay(5000)
+            for (d in devices.toList()) {
+                val ok = withContext(Dispatchers.IO) { fetchHello(d.host, d.port) } != null
+                val key = d.host + ":" + d.port
+                if (ok) {
+                    misses.remove(key)
+                } else {
+                    val n = (misses[key] ?: 0) + 1
+                    if (n >= 2) { devices.remove(d); misses.remove(key) } else misses[key] = n
+                }
+            }
+        }
     }
 
     val picker=rememberLauncherForActivityResult(

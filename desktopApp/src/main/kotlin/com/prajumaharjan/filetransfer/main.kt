@@ -17,6 +17,7 @@ import java.awt.Frame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -61,6 +62,8 @@ fun main() {
                             logs.add("Sent ${done.name} (${formatBytes(done.sent)})")
                         } catch (e: CancellationException) {
                             logs.add("Cancelled")
+                        } catch (e: CancelledbyReceiver) {
+                                logs.add("Cancelled by receiver")
                         } catch (e: Exception) {
                             logs.add("Failed: ${e.message}")
                         }
@@ -105,9 +108,29 @@ fun main() {
                         profile = p,
                         port = 8080,
                         onFound = { d ->
-                            if (d.id !=p.id) { devices.removeAll { it.name == d.name }; devices.add(d) }
+                            scope.launch {
+                                val h: HelloResponse? = withContext(Dispatchers.IO) {
+                                    var r = fetchHello(d.host, d.port)
+                                    if (r == null) {
+                                        delay(800)
+                                        r = fetchHello(d.host,d.port)
+                                    }
+                                    r
+                                }
+                                if (h != null) {
+                                    val full = d.withHello(h)
+                                    if (full.id != p.id) {
+                                        devices.removeAll {
+                                            it.name == full.name ||
+                                                    (full.id.isNotBlank() && it.id == full.id) ||
+                                                    (it.host == full.host && it.port == full.port)
+                                        }
+                                        devices.add(full)
+                                    }
+                                }
+                            }
                         },
-                        onLost = { n -> devices.removeAll { it.name == n } },
+                        onLost = { n -> scope.launch{ devices.removeAll { it.name == n } } },
                         onLog = { logs.add(it) }
                     )
                     logs.add("Advertising as $selfName")
@@ -116,6 +139,23 @@ fun main() {
                 }
             }.start()
             onDispose { discovery.stop() }
+        }
+
+        LaunchedEffect(Unit){
+            val misses = mutableMapOf<String,Int>()
+            while (true){
+                delay(5000)
+                for (d in devices.toList()){
+                    val ok = withContext(Dispatchers.IO) { fetchHello(d.host,d.port) } != null
+                    val key = d.host + ":" +d.port
+                    if(ok) {
+                        misses.remove(key)
+                    } else {
+                        val n = (misses[key] ?: 0) + 1
+                        if(n >= 2) { devices.remove(d); misses.remove(key) } else misses[key] = n
+                    }
+                }
+            }
         }
 
         Window(
