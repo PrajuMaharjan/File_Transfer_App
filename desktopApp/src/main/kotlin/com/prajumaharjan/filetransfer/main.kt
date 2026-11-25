@@ -35,6 +35,8 @@ fun main() {
         val scope = rememberCoroutineScope()
         val deviceList = remember { DeviceList(scope) }
         val devices = deviceList.devices
+        var showHotspot by remember { mutableStateOf(false) }
+        var connectFailed by remember { mutableStateOf(false) }
         var outgoing by remember { mutableStateOf<SendProgress?>(null) }
         var sendJob by remember { mutableStateOf<Job?>(null) }
         val sendTo: (Device) -> Unit = { d ->
@@ -48,6 +50,7 @@ fun main() {
                     val file = File(dir, fn)
                     sendJob = scope.launch {
                         outgoing = null
+                        connectFailed = false
                         try {
                             val done = withContext(Dispatchers.IO) {
                                 sendFile(file, d.host, d.port, p, coroutineContext) { outgoing = it }
@@ -59,6 +62,7 @@ fun main() {
                                 logs.add("Cancelled by receiver")
                         } catch (e: Exception) {
                             logs.add("Failed: ${e.message}")
+                            if(isUnreachable(e)) connectFailed=true
                         }
                         sendJob = null
                     }
@@ -116,6 +120,9 @@ fun main() {
         LaunchedEffect(Unit){
             deviceList.runPruner()
         }
+        LaunchedEffect(Unit){
+            deviceList.runStuckWatcher()
+        }
 
         Window(
             onCloseRequest = ::exitApplication,
@@ -155,6 +162,8 @@ fun main() {
 
                         Text("Nearby devices", style = MaterialTheme.typography.titleSmall)
                         if (devices.isEmpty()) Text("Noone found yet")
+                        ConnectionHint(deviceList.stuck || connectFailed) {showHotspot=true}
+                        if (showHotspot) HotspotInfoDialog { showHotspot = false }
                         devices.forEach { d ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Avatar(d.displayName, d.avatar, 28.dp)

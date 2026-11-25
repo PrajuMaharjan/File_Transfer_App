@@ -6,9 +6,14 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 class DeviceList(private val scope: CoroutineScope) {
     val devices = mutableStateListOf<Device>()
+    var stuck by mutableStateOf(false)
+    private var emptySince = System.currentTimeMillis()
     private val misses = mutableMapOf<String, Int>()
 
     fun onFound(d: Device, selfId: String) {
@@ -53,4 +58,17 @@ class DeviceList(private val scope: CoroutineScope) {
             }
         }
     }
+
+    suspend fun runStuckWatcher(afterMs:Long=15_000) {
+        while (true) {
+            delay(1000)
+            val now=System.currentTimeMillis()
+                if (devices.isNotEmpty()) {
+                    emptySince=now
+                    stuck=false
+                } else {
+                    stuck=now-emptySince>afterMs
+                }
+            }
+        }
 }

@@ -30,6 +30,7 @@ class ReceiverService : Service() {
         const val ACTION_ACCEPT = "com.prajumaharjan.filetransfer.ACCEPT"
         const val ACTION_REJECT = "com.prajumaharjan.filetransfer.REJECT"
         const val ACTION_STOP = "com.prajumaharjan.filetransfer.STOP"
+        const val ACTION_REFRESH = "com.prajumaharjan.filetransfer.REFRESH"
         private const val CH_RUN = "receiving"
         private const val CH_OFFER = "offers"
         private const val ID_RUN = 1
@@ -50,6 +51,7 @@ class ReceiverService : Service() {
             ACTION_ACCEPT -> ReceiverHub.pending?.second?.complete(true)
             ACTION_REJECT -> ReceiverHub.pending?.second?.complete(false)
             ACTION_STOP -> stopSelf()
+            ACTION_REFRESH -> restart()
             else -> startServer()
         }
         return START_NOT_STICKY
@@ -71,34 +73,7 @@ class ReceiverService : Service() {
         if (profile == null) { stopSelf(); return }
         started = true
 
-        scope.launch(Dispatchers.IO) {
-            try{
-                server = startReceiver(
-                    port = 8080,
-                    sink = MediaStoreSink(this@ReceiverService),
-                    profile = profile,
-                    cancelFlag = ReceiverHub.cancelFlag,
-                    onProgress = { ReceiverHub.transfer = it },
-                    onOffer = { offer ->
-                        val decision = CompletableDeferred<Boolean>()
-                        ReceiverHub.pending = offer to decision
-                        try {
-                            decision.await()
-                        } finally {
-                            ReceiverHub.pending = null
-                        }
-                    },
-                    onLog = { ReceiverHub.logs.add(it) }
-                )
-                ReceiverHub.logs.add("Listening on port 8080")
-                advertise(profile)
-                ReceiverHub.running = true
-            } catch (e: Exception) {
-                ReceiverHub.logs.add("Receiver failed: ${e.message}")
-                started = false
-                stopSelf()
-            }
-        }
+        scope.launch(Dispatchers.IO) { bringUp(profile) }
 
         scope.launch {
             val nm = getSystemService(NotificationManager::class.java)
@@ -109,12 +84,53 @@ class ReceiverService : Service() {
         }
     }
 
+
+    private fun bringUp(profile: Profile) {
+        try {
+            server = startReceiver(
+                port = 8080,
+                sink = MediaStoreSink(this),
+                profile = profile,
+                cancelFlag = ReceiverHub.cancelFlag,
+                onProgress = { ReceiverHub.transfer = it },
+                onOffer = { offer ->
+                    val decision = CompletableDeferred<Boolean>()
+                    ReceiverHub.pending = offer to decision
+                    try { decision.await() } finally { ReceiverHub.pending = null }
+                },
+                onLog = { ReceiverHub.logs.add(it) }
+            )
+            ReceiverHub.logs.add("Listening on port 8080")
+            advertise(profile)
+            ReceiverHub.running = true
+        } catch (e: Exception) {
+            ReceiverHub.logs.add("Receiver failed: ${e.message}")
+            started = false
+            stopSelf()
+        }
+    }
+
+    private fun restart() {
+        if (!started) return
+        val p = AndroidProfileStore(this).load() ?: return
+        scope.launch(Dispatchers.IO) {
+            regListener?.let { runCatching { nsd?.unregisterService(it) } }
+            regListener = null
+            runCatching { server?.stop(300, 1000) }
+            kotlinx.coroutines.delay(1000)
+            bringUp(p)
+        }
+    }
+
     private fun advertise(profile: Profile){
         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-        lock = wifi.createMulticastLock("filetransfer").apply {
-            setReferenceCounted(false)
-            acquire()
+        if(lock==null) {
+            lock = wifi.createMulticastLock("filetransfer").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
         }
+
         val info = NsdServiceInfo().apply {
             serviceName = "FT-" + profile.id.take(8)
             serviceType = "_filetransfer._tcp"
@@ -130,8 +146,8 @@ class ReceiverService : Service() {
             override fun onRegistrationFailed(i: NsdServiceInfo, code: Int) {
                 ReceiverHub.logs.add("Advertising failed, code $code")
             }
-            override fun onServiceUnregistered(i: NsdServiceInfo) { runCatching { lock?.release() } }
-            override fun onUnregistrationFailed(i: NsdServiceInfo,code: Int) { runCatching { lock?.release() }}
+            override fun onServiceUnregistered(i: NsdServiceInfo) {}
+            override fun onUnregistrationFailed(i: NsdServiceInfo, code: Int) {}
         }
         regListener = l
         val m = getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -184,10 +200,11 @@ class ReceiverService : Service() {
     override fun onDestroy() {
         ReceiverHub.running = false
         ReceiverHub.pending?.second?.complete(false)
-        val l =regListener
-        if(l != null) runCatching { nsd?.unregisterService(l) }
+        regListener?.let { runCatching { nsd?.unregisterService(it) } }
         runCatching { server?.stop(300, 1000) }
-        if(l == null) runCatching { lock?.release() }
+        val lk = lock
+        android.os.Handler(android.os.Looper.getMainLooper())
+            .postDelayed({ runCatching { lk?.release() } }, 1500)
         scope.cancel()
         super.onDestroy()
     }

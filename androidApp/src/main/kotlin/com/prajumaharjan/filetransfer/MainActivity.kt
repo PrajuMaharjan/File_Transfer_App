@@ -46,7 +46,13 @@ class MainActivity : ComponentActivity() {
             if (current == null || editing){
                 ProfileSetupScreen(
                     initial = current,
-                    onDone = { store.save(it); profile = it; editing = false;},
+                    onDone = {
+                        store.save(it); profile = it; editing = false
+                        if(ReceiverHub.running) startService(
+                            Intent(this@MainActivity, ReceiverService::class.java)
+                                .setAction(ReceiverService.ACTION_REFRESH)
+                        )
+                    },
                     onCancel = if (current != null) ({ editing = false}) else null
                 )
             } else {
@@ -92,7 +98,10 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         onDispose { discovery.stop() }
     }
 
+    var showHotspot by remember { mutableStateOf(false) }
+    var connectFailed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { deviceList.runPruner() }
+    LaunchedEffect(Unit) { deviceList.runStuckWatcher() }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -101,6 +110,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
             job = scope.launch {
                 sending = true
                 transfer = null
+                connectFailed = false
                 try {
                     val done = withContext(Dispatchers.IO) {
                         uploadFile(context, uri, ip.trim(), port, profile,coroutineContext) { transfer = it }
@@ -112,6 +122,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
                     logs.add("Cancelled by receiver")
                 } catch (e: Exception) {
                     logs.add("Failed: ${e.message}")
+                    if (isUnreachable(e)) connectFailed = true
                 }
                 sending = false
                 job = null
@@ -163,6 +174,11 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         Text("Nearby devices",style= MaterialTheme.typography.titleSmall)
         if(devices.isEmpty()) Text("Searching...")
         Text(discoveryStatus, style = MaterialTheme.typography.bodySmall)
+
+//        Show hotspot option after 15s of nothing found
+        ConnectionHint(deviceList.stuck || connectFailed) { showHotspot = true }
+        if (showHotspot) HotspotInfoDialog { showHotspot = false }
+
         devices.forEach { d ->
             OutlinedButton(
                 onClick = {ip = d.host; port = d.port },
