@@ -17,16 +17,8 @@ import java.awt.Frame
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private fun formatBytes(b:Long): String=when{
-    b < 1024 -> "$b B"
-    b < 1024 * 1024 -> "%.1f KB".format(b/1024.0)
-    b < 1024L * 1024*1024 -> "%.1f MB".format(b/(1024.0*1024))
-    else -> "%.2f GB".format(b/(1024.0*1024*1024))
-}
 
 fun main() {
 
@@ -39,9 +31,10 @@ fun main() {
         val logs = remember { mutableStateListOf<String>() }
         var transfer by remember { mutableStateOf<TransferProgress?>(null) }
         val cancelFlag = remember { AtomicBoolean(false) }
-        val devices = remember { mutableStateListOf<Device>() }
         var pending by remember { mutableStateOf<Pair<OfferRequest, CompletableDeferred<Boolean>>?>(null) }
         val scope = rememberCoroutineScope()
+        val deviceList = remember { DeviceList(scope) }
+        val devices = deviceList.devices
         var outgoing by remember { mutableStateOf<SendProgress?>(null) }
         var sendJob by remember { mutableStateOf<Job?>(null) }
         val sendTo: (Device) -> Unit = { d ->
@@ -73,10 +66,10 @@ fun main() {
             }
         }
 
-        LaunchedEffect(profile?.id) {
-            val p = profile ?: return@LaunchedEffect
+        DisposableEffect(profile) {
+            val p = profile ?: return@DisposableEffect onDispose {  }
             val dir = File(System.getProperty("user.home"), "Downloads/FileTransfer")
-            startReceiver(
+            val server = startReceiver(
                 port = 8080,
                 sink = DirFileSink(dir),
                 profile = p,
@@ -95,9 +88,10 @@ fun main() {
             )
 
             logs.add("Listening on port 8080, saving to $dir")
+            onDispose { server.stop(300,1000) }
         }
 
-        DisposableEffect(profile?.id) {
+        DisposableEffect(profile) {
             val p = profile ?: return@DisposableEffect onDispose {  }
             val discovery = DesktopDiscovery()
             val selfName = (System.getenv("COMPUTERNAME") ?: "Desktop") + "-" + (1000..9999).random()
@@ -107,30 +101,8 @@ fun main() {
                         selfName = selfName,
                         profile = p,
                         port = 8080,
-                        onFound = { d ->
-                            scope.launch {
-                                val h: HelloResponse? = withContext(Dispatchers.IO) {
-                                    var r = fetchHello(d.host, d.port)
-                                    if (r == null) {
-                                        delay(800)
-                                        r = fetchHello(d.host,d.port)
-                                    }
-                                    r
-                                }
-                                if (h != null) {
-                                    val full = d.withHello(h)
-                                    if (full.id != p.id) {
-                                        devices.removeAll {
-                                            it.name == full.name ||
-                                                    (full.id.isNotBlank() && it.id == full.id) ||
-                                                    (it.host == full.host && it.port == full.port)
-                                        }
-                                        devices.add(full)
-                                    }
-                                }
-                            }
-                        },
-                        onLost = { n -> scope.launch{ devices.removeAll { it.name == n } } },
+                        onFound = { d -> deviceList.onFound(d,p.id) },
+                        onLost = { n -> deviceList.onLost(n) },
                         onLog = { logs.add(it) }
                     )
                     logs.add("Advertising as $selfName")
@@ -142,20 +114,7 @@ fun main() {
         }
 
         LaunchedEffect(Unit){
-            val misses = mutableMapOf<String,Int>()
-            while (true){
-                delay(5000)
-                for (d in devices.toList()){
-                    val ok = withContext(Dispatchers.IO) { fetchHello(d.host,d.port) } != null
-                    val key = d.host + ":" +d.port
-                    if(ok) {
-                        misses.remove(key)
-                    } else {
-                        val n = (misses[key] ?: 0) + 1
-                        if(n >= 2) { devices.remove(d); misses.remove(key) } else misses[key] = n
-                    }
-                }
-            }
+            deviceList.runPruner()
         }
 
         Window(
@@ -185,62 +144,15 @@ fun main() {
                         TextButton(onClick = { editing = true }) { Text("Edit profile (${current.name})") }
                         Spacer(Modifier.height(12.dp))
 
-                        transfer?.let { t ->
-                            val fraction = if (t.total > 0) (t.received.toFloat() / t.total).coerceIn(0f, 1f) else 0f
-                            val label = when {
-                                t.cancelled -> "Cancelled: ${t.name}"
-                                t.failed -> "Failed: ${t.name}"
-                                t.finished -> "Done: ${t.name} (${formatBytes(t.received)})"
-                                t.total > 0 -> "Receiving ${t.name}: ${formatBytes(t.received)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
-                                else -> "Receiving ${t.name}: ${formatBytes(t.received)}"
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(label, Modifier.weight(1f))
-                                if (!t.finished && !t.failed && !t.cancelled) {
-                                    IconButton(onClick = { cancelFlag.set(true) }) { Text("✕") }
-                                }
-                            }
-                            Spacer(Modifier.height(4.dp))
-                            if (t.total > 0 || t.finished) {
-                                LinearProgressIndicator(
-                                    progress = { if (t.finished) 1f else fraction },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            } else if (!t.failed && !t.cancelled) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            }
+                        transfer?.let {
+                            ReceiveCard(it) { cancelFlag.set(true) }
                             Spacer(Modifier.height(12.dp))
                         }
-                        outgoing?.let { t ->
-                            val fraction = if (t.total > 0) (t.sent.toFloat() / t.total).coerceIn(0f, 1f) else 0f
-                            val label = when {
-                                t.waiting -> "Waiting for approval: ${t.name}"
-                                t.cancelled -> "Cancelled: ${t.name}"
-                                t.failed -> "Failed: ${t.name}"
-                                t.finished -> "Sent: ${t.name} (${formatBytes(t.sent)})"
-                                else -> "Sending ${t.name}: ${formatBytes(t.sent)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
-                            }
-
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(label, Modifier.weight(1f))
-                                if (!t.finished && !t.failed && !t.cancelled && !t.waiting) {
-                                    IconButton(onClick = { sendJob?.cancel() }) { Text("✕") }
-                                }
-                            }
-
-                            Spacer(Modifier.height(4.dp))
-                            if (t.waiting) {
-                                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                            } else {
-                                LinearProgressIndicator(
-                                    progress = { if (t.finished) 1f else fraction },
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-
+                        outgoing?.let {
+                            SendCard(it) { sendJob?.cancel() }
                             Spacer(Modifier.height(12.dp))
                         }
+
                         Text("Nearby devices", style = MaterialTheme.typography.titleSmall)
                         if (devices.isEmpty()) Text("Noone found yet")
                         devices.forEach { d ->

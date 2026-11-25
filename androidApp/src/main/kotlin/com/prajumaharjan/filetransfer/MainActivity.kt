@@ -29,7 +29,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -69,19 +68,14 @@ private fun stopReceiverService(context: Context){
     )
 }
 
-private fun formatBytes(b:Long): String=when{
-    b < 1024 -> "$b B"
-    b < 1024 * 1024 -> "%.1f KB".format(b/1024.0)
-    b < 1024L * 1024*1024 -> "%.1f MB".format(b/(1024.0*1024))
-    else -> "%.2f GB".format(b/(1024.0*1024*1024))
-}
 @Composable
 fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     val context=LocalContext.current
     val scope=rememberCoroutineScope()
     var ip by remember { mutableStateOf("") }
     var port by remember { mutableIntStateOf(8080) }
-    val devices = remember { mutableStateListOf<Device>() }
+    val deviceList = remember { DeviceList(scope) }
+    val devices = deviceList.devices
     val logs = remember { mutableStateListOf<String>() }
     var discoveryStatus by remember { mutableStateOf("Starting discovery") }
     var transfer by remember { mutableStateOf<SendProgress?>(null) }
@@ -91,51 +85,14 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     DisposableEffect(Unit) {
         val discovery = NsDiscovery(context)
         discovery.start(
-            onFound = { d ->
-                scope.launch{
-                    val h: HelloResponse? = withContext(Dispatchers.IO) {
-                        var r = fetchHello(d.host, d.port)
-                        if (r == null) {
-                            delay(800)
-                            r = fetchHello(d.host, d.port)
-                        }
-                        r
-                    }
-                    if (h != null) {
-                        val full = d.withHello(h)
-                        if (full.id != profile.id) {
-                            devices.removeAll {
-                                it.name == full.name ||
-                                        (full.id.isNotBlank() && it.id == full.id) ||
-                                        (it.host == full.host && it.port == full.port)
-                            }
-                            devices.add(full)
-                        }
-                    }
-                }
-            },
-            onLost = {n -> devices.removeAll { it.name == n } },
+            onFound = { d -> deviceList.onFound(d, profile.id) },
+            onLost = { n -> deviceList.onLost(n) },
             onStatus = { discoveryStatus = it }
         )
         onDispose { discovery.stop() }
     }
 
-    LaunchedEffect(Unit) {
-        val misses = mutableMapOf<String, Int>()
-        while (true) {
-            delay(5000)
-            for (d in devices.toList()) {
-                val ok = withContext(Dispatchers.IO) { fetchHello(d.host, d.port) } != null
-                val key = d.host + ":" + d.port
-                if (ok) {
-                    misses.remove(key)
-                } else {
-                    val n = (misses[key] ?: 0) + 1
-                    if (n >= 2) { devices.remove(d); misses.remove(key) } else misses[key] = n
-                }
-            }
-        }
-    }
+    LaunchedEffect(Unit) { deviceList.runPruner() }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -199,24 +156,8 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
                 }
             )
         }
-        ReceiverHub.transfer?.let {r ->
-            val f = if (r.total > 0) (r.received.toFloat() / r.total).coerceIn(0f,1f) else 0f
-            val text = when {
-                r.cancelled -> "Cancelled: ${r.name}"
-                r.failed -> "Failed: ${r.name}"
-                r.finished -> "Received: ${r.name} (${formatBytes(r.received)})"
-                else -> "Receiving ${r.name}: ${formatBytes(r.received)} / ${formatBytes(r.total)} (${(f * 100).toInt()}%)"
-            }
-            Row(verticalAlignment = Alignment.CenterVertically){
-                Text(text,Modifier.weight(1f))
-                if(!r.finished && !r.failed && !r.cancelled){
-                    IconButton(onClick = { ReceiverHub.cancelFlag.set(true) }) {Text("✕") }
-                }
-            }
-            LinearProgressIndicator(
-                progress = { if (r.finished) 1f else f },
-                modifier = Modifier.fillMaxWidth()
-            )
+        ReceiverHub.transfer?.let {
+            ReceiveCard(it) { ReceiverHub.cancelFlag.set(true) }
         }
 
         Text("Nearby devices",style= MaterialTheme.typography.titleSmall)
@@ -252,34 +193,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         if(t==null){
             Text("Enter the PC's IP, then pick a file")
         }else{
-            val fraction=if (t.total>0)(t.sent.toFloat()/t.total).coerceIn(0f,1f) else 0f
-
-            val label=when{
-                t.waiting -> "Waiting for approval on PC: ${t.name}"
-                t.cancelled -> "Cancelled: ${t.name}"
-                t.failed -> "Failed: ${t.name}"
-                t.finished -> "Done: ${t.name} (${formatBytes(t.sent)})"
-                t.total > 0 -> "Sending ${t.name}: ${formatBytes(t.sent)} / ${formatBytes(t.total)} (${(fraction * 100).toInt()}%)"
-                else -> "Sending ${t.name}: ${formatBytes(t.sent)}"
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically){
-                Text(label, Modifier.weight(1f))
-                if(!t.finished && !t.failed && !t.cancelled && !t.waiting){
-                    IconButton(onClick = {job?.cancel() }) { Text("✕") }
-                }
-            }
-            if (t.waiting) {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
-            else if (t.total > 0 || t.finished) {
-                LinearProgressIndicator(
-                    progress = { if (t.finished) 1f else fraction },
-                    modifier = Modifier.fillMaxWidth()
-                )
-            } else {
-                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-            }
+            SendCard(t) {job?.cancel() }
         }
         LazyColumn { items(logs) {Text(it) } }
     }
