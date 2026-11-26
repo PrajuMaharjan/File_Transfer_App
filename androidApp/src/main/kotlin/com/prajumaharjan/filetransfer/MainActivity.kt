@@ -150,7 +150,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
             )
         }
 
-        Text("Send to PC",style= MaterialTheme.typography.headlineSmall)
+        Text("Send to a device",style= MaterialTheme.typography.headlineSmall)
         TextButton(onClick = onEditProfile) { Text("Edit profile (${profile.name})") }
         Row(verticalAlignment = Alignment.CenterVertically){
             Text("Receive files", Modifier.weight(1f))
@@ -193,7 +193,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         OutlinedTextField(
             value = ip,
             onValueChange = { ip = it; port = 8080 },
-            label={Text("PC IP address (e.g. 192.168.1.23)")},
+            label={Text("Device IP address (e.g. 192.168.1.23)")},
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth()
@@ -207,7 +207,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
 
         val t=transfer
         if(t==null){
-            Text("Enter the PC's IP, then pick a file")
+            Text("Pick a device above (or enter it's IP, then pick a file")
         }else{
             SendCard(t) {job?.cancel() }
         }
