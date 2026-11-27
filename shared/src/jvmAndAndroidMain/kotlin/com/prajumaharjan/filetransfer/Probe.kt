@@ -6,12 +6,12 @@ import java.net.URL
 
 private val helloJson = Json { ignoreUnknownKeys = true }
 
-fun fetchHello(host : String, port : Int): HelloResponse? {
+fun fetchHello(host : String, port : Int,timeoutMs:Int=1500): HelloResponse? {
     return try {
         val c = URL("http://$host:$port/hello").openConnection() as HttpURLConnection
         try {
-            c.connectTimeout = 1500
-            c.readTimeout = 1500
+            c.connectTimeout = timeoutMs
+            c.readTimeout = timeoutMs
             if (c.responseCode == 200){
                 helloJson.decodeFromString(
                     HelloResponse.serializer(),

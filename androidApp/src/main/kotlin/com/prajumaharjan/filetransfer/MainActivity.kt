@@ -101,7 +101,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     var showHotspot by remember { mutableStateOf(false) }
     var connectFailed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { deviceList.runPruner() }
-    LaunchedEffect(Unit) { deviceList.runStuckWatcher() }
+    LaunchedEffect(Unit) { deviceList.runStuckWatcher(profile.id) }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
