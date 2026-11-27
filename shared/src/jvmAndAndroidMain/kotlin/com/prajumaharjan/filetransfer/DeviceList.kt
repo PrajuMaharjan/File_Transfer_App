@@ -59,16 +59,40 @@ class DeviceList(private val scope: CoroutineScope) {
         }
     }
 
-    suspend fun runStuckWatcher(afterMs:Long=15_000) {
+    suspend fun runStuckWatcher(selfId: String, afterMs:Long=15_000) {
         while (true) {
             delay(1000)
             val now=System.currentTimeMillis()
-                if (devices.isNotEmpty()) {
-                    emptySince=now
-                    stuck=false
-                } else {
-                    stuck=now-emptySince>afterMs
-                }
+            if (devices.isNotEmpty()) {
+                emptySince=now
+                stuck=false
+            } else {
+                val empty = now - emptySince
+                if(empty>5_000) scanNow(selfId)
+                stuck = empty>afterMs
             }
         }
+    }
+
+    private var scanning = false
+
+    fun scanNow(selfId: String) {
+        if (scanning) return
+        scanning = true
+        scope.launch {
+            try {
+                val found = scanSubnets()
+                for ((host, hello) in found) {
+                    val d = Device(name = "$host:8080", host = host, port = 8080).withHello(hello)
+                    if (d.id == selfId) continue
+                    devices.removeAll {
+                        (d.id.isNotBlank() && it.id == d.id) || (it.host == d.host && it.port == d.port)
+                    }
+                    devices.add(d)
+                }
+            } finally {
+                scanning = false
+            }
+        }
+    }
 }

@@ -101,7 +101,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
     var showHotspot by remember { mutableStateOf(false) }
     var connectFailed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { deviceList.runPruner() }
-    LaunchedEffect(Unit) { deviceList.runStuckWatcher() }
+    LaunchedEffect(Unit) { deviceList.runStuckWatcher(profile.id) }
 
     val picker=rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -134,6 +134,10 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         ActivityResultContracts.RequestPermission()
     ) { startReceiverService(context) }
 
+    val hotspotPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { ok->if(ok) HotspotManager.start(context) else HotspotManager.error="Permission denied" }
+
     Column(Modifier
             .fillMaxSize()
             .safeDrawingPadding()
@@ -150,7 +154,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
             )
         }
 
-        Text("Send to PC",style= MaterialTheme.typography.headlineSmall)
+        Text("Send to a device",style= MaterialTheme.typography.headlineSmall)
         TextButton(onClick = onEditProfile) { Text("Edit profile (${profile.name})") }
         Row(verticalAlignment = Alignment.CenterVertically){
             Text("Receive files", Modifier.weight(1f))
@@ -167,6 +171,26 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
                 }
             )
         }
+
+        if (Build.VERSION.SDK_INT >= 26) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Hotspot (for networks that block devices)", Modifier.weight(1f))
+                Switch(
+                    checked = HotspotManager.info != null || HotspotManager.starting,
+                    onCheckedChange = { on ->
+                        if (!on) HotspotManager.stop() else {
+                            val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
+                            else Manifest.permission.ACCESS_FINE_LOCATION
+                            if (ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED)
+                                HotspotManager.start(context)
+                            else hotspotPermission.launch(perm)
+                        }
+                    }
+                )
+            }
+            HotspotPanel()
+        }
+
         ReceiverHub.transfer?.let {
             ReceiveCard(it) { ReceiverHub.cancelFlag.set(true) }
         }
@@ -193,7 +217,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         OutlinedTextField(
             value = ip,
             onValueChange = { ip = it; port = 8080 },
-            label={Text("PC IP address (e.g. 192.168.1.23)")},
+            label={Text("Device IP address (e.g. 192.168.1.23)")},
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
             modifier = Modifier.fillMaxWidth()
@@ -207,7 +231,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
 
         val t=transfer
         if(t==null){
-            Text("Enter the PC's IP, then pick a file")
+            Text("Pick a device above (or enter its IP), then pick a file")
         }else{
             SendCard(t) {job?.cancel() }
         }

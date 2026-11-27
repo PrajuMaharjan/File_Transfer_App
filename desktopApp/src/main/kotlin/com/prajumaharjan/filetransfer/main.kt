@@ -121,7 +121,7 @@ fun main() {
             deviceList.runPruner()
         }
         LaunchedEffect(Unit){
-            deviceList.runStuckWatcher()
+            deviceList.runStuckWatcher(profile?.id ?: "")
         }
 
         Window(
