@@ -134,6 +134,10 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
         ActivityResultContracts.RequestPermission()
     ) { startReceiverService(context) }
 
+    val hotspotPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { ok->if(ok) HotspotManager.start(context) else HotspotManager.error="Permission denied" }
+
     Column(Modifier
             .fillMaxSize()
             .safeDrawingPadding()
@@ -167,6 +171,26 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
                 }
             )
         }
+
+        if (Build.VERSION.SDK_INT >= 26) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Hotspot (for networks that block devices)", Modifier.weight(1f))
+                Switch(
+                    checked = HotspotManager.info != null || HotspotManager.starting,
+                    onCheckedChange = { on ->
+                        if (!on) HotspotManager.stop() else {
+                            val perm = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.NEARBY_WIFI_DEVICES
+                            else Manifest.permission.ACCESS_FINE_LOCATION
+                            if (ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED)
+                                HotspotManager.start(context)
+                            else hotspotPermission.launch(perm)
+                        }
+                    }
+                )
+            }
+            HotspotPanel()
+        }
+
         ReceiverHub.transfer?.let {
             ReceiveCard(it) { ReceiverHub.cancelFlag.set(true) }
         }
@@ -207,7 +231,7 @@ fun SenderScreen(profile: Profile, onEditProfile:()->Unit) {
 
         val t=transfer
         if(t==null){
-            Text("Pick a device above (or enter it's IP, then pick a file")
+            Text("Pick a device above (or enter its IP), then pick a file")
         }else{
             SendCard(t) {job?.cancel() }
         }

@@ -36,11 +36,9 @@ fun HotspotInfoDialog(onClose: () -> Unit) {
         text = {
             Text(
                 "Some Wi-Fi networks stop devices from talking to each other.\n\n" +
-                        "1. Turn on the phone's Wi-Fi hotspot.\n" +
-                        "2. Connect the PC to that hotspot.\n" +
-                        "3. Open the app on both. If the device list stays empty, type the other " +
-                        "device's IP address manually.\n\n" +
-                        "One-tap hotspot with a QR code is coming in the next update."
+                    "1. On the phone, turn on \"Hotspot\" in this app and Receive files.\n" +
+                    "2. Join the network shown on the phone (QR for another phone, name and " + "password for a PC).\n" +
+                    "3. The device list fills in within about 10 s. If not, type the phone's IP."
             )
         },
         confirmButton = { TextButton(onClick = onClose) { Text("OK") } }
