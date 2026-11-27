@@ -8,6 +8,9 @@ import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
 
 data class SendProgress(
@@ -115,6 +118,10 @@ fun sendStream(
     var lastEmit = 0L
     var lastPoll = System.nanoTime()
     val encoded = URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+    val lastMove= AtomicLong(System.nanoTime())
+    val stalled = AtomicBoolean(false)
+    val finished = AtomicBoolean(false)
+    val watchDog: Thread? = null
     val conn = URL("http://$host:$port/upload/$encoded").openConnection() as HttpURLConnection
     try {
         conn.requestMethod = "PUT"
@@ -123,6 +130,21 @@ fun sendStream(
         conn.connectTimeout = 5000
         if (size >= 0) conn.setFixedLengthStreamingMode(size)
         else conn.setChunkedStreamingMode(64 * 1024)
+        conn.readTimeout=30_000
+
+        val lastMove= AtomicLong(System.nanoTime())
+        val stalled = AtomicBoolean(false)
+        val finished = AtomicBoolean(false)
+        val watchDog = Thread {
+            while(!finished.get()) {
+                try { Thread.sleep(1000) } catch (e: InterruptedException) { return@Thread }
+                if(System.nanoTime() - lastMove.get() > 15_000_000_000L) {
+                    stalled.set(true)
+                    runCatching { conn.disconnect() }
+                    return@Thread
+                }
+            }
+        }.apply { isDaemon = true; start() }
 
         val input = open() ?: error("Cannot open file")
         input.use { inp ->
@@ -134,6 +156,7 @@ fun sendStream(
                     if (n < 0) break
                     out.write(buf, 0, n)
                     sent += n
+                    lastMove.set(System.nanoTime())
                     val now = System.nanoTime()
                     if (now - lastPoll > 500_000_000L){
                         lastPoll = now
@@ -163,8 +186,10 @@ fun sendStream(
     }
     catch (e: Exception) {
         onProgress(SendProgress(name, sent, size, failed = true))
-        throw e
+        throw if (stalled.get()) IOException("Connection lost (no data moved for 15 s)") else e
     } finally {
+        finished.set(true)
+        watchDog?.interrupt()
         conn.disconnect()
     }
 }

@@ -19,6 +19,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 fun main() {
 
@@ -70,29 +74,43 @@ fun main() {
             }
         }
 
-        DisposableEffect(profile) {
-            val p = profile ?: return@DisposableEffect onDispose {  }
-            val dir = File(System.getProperty("user.home"), "Downloads/FileTransfer")
-            val server = startReceiver(
-                port = 8080,
-                sink = DirFileSink(dir),
-                profile = p,
-                cancelFlag = cancelFlag,
-                onProgress = { transfer = it },
-                onOffer = { offer ->
-                    val decision = CompletableDeferred<Boolean>()
-                    pending = offer to decision
-                    try {
-                        decision.await()
-                    } finally {
-                        pending = null
-                    }
-                },
-                onLog = { logs.add(it) }
-            )
+        val serverLock = remember { Mutex() }
+        LaunchedEffect(profile) {
+            val p = profile ?: return@LaunchedEffect
 
-            logs.add("Listening on port 8080, saving to $dir")
-            onDispose { server.stop(300,1000) }
+            serverLock.withLock{
+                val dir = File(System.getProperty("user.home"), "Downloads/FileTransfer")
+                val server = try{
+                    withContext(Dispatchers.IO) {
+                        startReceiver(
+                            port = 8080,
+                            sink = DirFileSink(dir),
+                            profile = p,
+                            cancelFlag = cancelFlag,
+                            onProgress = { transfer = it },
+                            onOffer = { offer ->
+                                val decision = CompletableDeferred<Boolean>()
+                                pending = offer to decision
+                                try {
+                                    decision.await()
+                                } finally {
+                                    pending = null
+                                }
+                            },
+                            onLog = { logs.add(it) }
+                        )
+                    }
+                } catch (e:Exception){
+                    logs.add("Receiver failed: ${e.message}")
+                    return@withLock
+                }
+                logs.add("Listening on port 8080, saving to $dir")
+                try{
+                    awaitCancellation()
+                } finally {
+                    withContext(NonCancellable + Dispatchers.IO) {server.stop(300,1000) }
+                }
+            }
         }
 
         DisposableEffect(profile) {
@@ -114,14 +132,15 @@ fun main() {
                     logs.add("Discovery failed: ${e.message}")
                 }
             }.start()
-            onDispose { discovery.stop() }
+
+            onDispose { Thread{runCatching { discovery.stop() } }.start() }
         }
 
         LaunchedEffect(Unit){
             deviceList.runPruner()
         }
-        LaunchedEffect(Unit){
-            deviceList.runStuckWatcher()
+        LaunchedEffect(profile?.id){
+            deviceList.runStuckWatcher(profile?.id ?: "")
         }
 
         Window(
@@ -161,7 +180,7 @@ fun main() {
                         }
 
                         Text("Nearby devices", style = MaterialTheme.typography.titleSmall)
-                        if (devices.isEmpty()) Text("Noone found yet")
+                        if (devices.isEmpty()) Text("No one found yet")
                         ConnectionHint(deviceList.stuck || connectFailed) {showHotspot=true}
                         if (showHotspot) HotspotInfoDialog { showHotspot = false }
                         devices.forEach { d ->

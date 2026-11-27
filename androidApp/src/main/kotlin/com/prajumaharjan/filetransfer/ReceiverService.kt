@@ -177,6 +177,14 @@ class ReceiverService : Service() {
             .setContentTitle("Ready to receive files")
             .setContentIntent(openApp())
             .setOngoing(true)
+            .addAction(
+                0,"Stop",
+                PendingIntent.getService(
+                    this,3,
+                    Intent(this,ReceiverService::class.java).setAction(ACTION_STOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
             .build()
 
     private fun offerNotification(o: OfferRequest): Notification{
@@ -200,12 +208,25 @@ class ReceiverService : Service() {
     override fun onDestroy() {
         ReceiverHub.running = false
         ReceiverHub.pending?.second?.complete(false)
-        regListener?.let { runCatching { nsd?.unregisterService(it) } }
-        runCatching { server?.stop(300, 1000) }
+        val l = regListener
+        val m = nsd
+        val s = server
+        regListener = null
+        server = null
+        Thread{
+            l?.let { runCatching { m?.unregisterService(it) } }
+            runCatching { s?.stop(300, 1000) }
+        }.start()
+
         val lk = lock
         android.os.Handler(android.os.Looper.getMainLooper())
             .postDelayed({ runCatching { lk?.release() } }, 1500)
         scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onTaskRemoved(rootIntent:Intent){
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
     }
 }
